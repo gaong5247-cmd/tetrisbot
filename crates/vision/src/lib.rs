@@ -18,16 +18,49 @@ fn median_color(v: &[[u8; 3]]) -> [u8; 3] {
         a[a.len() / 2]
     })
 }
-fn sample(f: &Frame, cx: f32, cy: f32, cw: f32, ch: f32) -> ([u8; 3], f32) {
-    let mut v = Vec::with_capacity(9);
+fn sample(f: &Frame, cx: f32, cy: f32, cw: f32, ch: f32) -> ([u8; 3], f32, [[u8;3];9]) {
+    let mut v = [[0u8;3];9];
+    let mut index=0;
     for dy in [-0.18, 0., 0.18] {
         for dx in [-0.18, 0., 0.18] {
-            v.push(f.pixel((cx + dx * cw).round() as i32, (cy + dy * ch).round() as i32));
+            v[index]=f.pixel((cx + dx * cw).round() as i32,
+                             (cy + dy * ch).round() as i32);
+            index+=1;
         }
     }
     let median = median_color(&v);
     let spread = v.iter().map(|&p| contrast(p, median)).sum::<f32>() / 9.;
-    (median, spread)
+    (median, spread, v)
+}
+/// On dense garbage stacks most centers are filled. A repeated dark
+/// cluster can reveal a real visible hole even when the top row is occupied.
+/// A grid-seam cross-check avoids silently erasing arbitrary dark blocks.
+fn repeated_dark_background(f: &Frame, g: Grid, centers: &[[u8;3]], top: [u8;3])
+    -> Option<[u8;3]>
+{
+    let mut ranked = centers.to_vec();
+    ranked.sort_unstable_by_key(|rgb| rgb.iter().map(|v| *v as u16).sum::<u16>());
+    let darkest = median_color(&ranked[..12]);
+    let supporters = centers.iter().filter(|&&rgb| contrast(rgb,darkest)<12.).count();
+    if supporters < 6 {return None}
+    let darkness_top=top.iter().map(|v|*v as i32).sum::<i32>();
+    let darkness_low=darkest.iter().map(|v|*v as i32).sum::<i32>();
+    if darkness_top-darkness_low < 36 {return None}
+    let mut seams = Vec::with_capacity(20);
+    for x in 1..10 {
+        seams.push(f.pixel(
+            (g.x + x as f32*g.cw).round() as i32,
+            (g.y+0.5*g.ch).round() as i32
+        ));
+    }
+    for y in [2,5,8,11,14,17] {
+        seams.push(f.pixel(
+            (g.x+4.*g.cw).round() as i32,
+            (g.y+(y as f32+0.5)*g.ch).round() as i32
+        ));
+    }
+    let seam=median_color(&seams);
+    (contrast(darkest,seam)<70.).then_some(darkest)
 }
 /// Hollow ghost silhouettes often use a nearly background-colored center with
 /// brighter rims. Detect *geometry*, not an RGB/gray palette or PNG template.
@@ -143,6 +176,36 @@ fn dimmed_ghost_cells(raw: &[[bool;10];20], colors:&[[u8;3]], bg:[u8;3],
     strongest.map(|(_,loc,cells)|(loc,cells))
 }
 
+/// An independent frame-to-frame consensus gate for issuing a new turn.
+/// A single screenshot (often a line-clear flash or incoming garbage frame)
+/// is not enough to authorize input, even if one-frame confidence is high.
+/// Each call must correspond to a newly captured frame, not a GUI repaint.
+#[derive(Default)]
+pub struct StableBoardGate {
+    last: Option<(Board, Piece)>,
+    consecutive: u8,
+}
+impl StableBoardGate {
+    pub fn reset(&mut self) { self.last=None; self.consecutive=0; }
+    pub fn count(&self)->u8 {self.consecutive}
+    pub fn confirmed(&self)->bool {self.consecutive>=2}
+    pub fn observe(&mut self, o:&Observation, fresh_game:bool)->bool {
+        let Ok(planning)=PlanningSnapshot::from_observation(o,fresh_game) else {
+            self.reset();
+            return false;
+        };
+        let snapshot=planning.snapshot;
+        let key=(snapshot.board,snapshot.active.piece);
+        if self.last==Some(key) {
+            self.consecutive=self.consecutive.saturating_add(1);
+        } else {
+            self.last=Some(key);
+            self.consecutive=1;
+        }
+        self.confirmed()
+    }
+}
+
 impl Vision {
     /// Carry trusted temporal evidence across the vision/engine worker boundary.
     /// This is an observed state, not an inferred spawn position.
@@ -191,9 +254,11 @@ impl Vision {
         } else {
             (top_four_bg,top_four_support)
         };
-        let bg=self.background.unwrap_or(top_bg);
-        if self.background.is_none() && support>=5 {
-            self.background=Some(top_bg);
+        let refined=repeated_dark_background(f,g,&centers,top_bg);
+        let candidate=refined.unwrap_or(top_bg);
+        let bg=self.background.unwrap_or(candidate);
+        if self.background.is_none() && (support>=5 || refined.is_some()) {
+            self.background=Some(candidate);
         }
         let mut o = Observation::default();
         let mut raw = [[false; 10]; 20];
@@ -201,8 +266,12 @@ impl Vision {
         let mut hollow = [[false; 10]; 20];
         for y in 0..20 {
             for x in 0..10 {
-                let (color, spread) = features[y * 10 + x];
+                let (color, spread, pixels) = features[y * 10 + x];
                 let d = contrast(color, bg);
+                // Per-cell voting tolerates one or two highlight or effect
+                // pixels without converting the entire cell into a wall.
+                let solid_votes=pixels.iter().filter(|&&p|contrast(p,bg)>24.).count();
+                let empty_votes=pixels.iter().filter(|&&p|contrast(p,bg)<12.).count();
                 let mut outline = 0;
                 for (dx, dy) in [(0.12, 0.5), (0.88, 0.5), (0.5, 0.12), (0.5, 0.88)] {
                     if contrast(
@@ -221,13 +290,13 @@ impl Vision {
                 hollow[y][x] = hollow_ghost_candidate(f, cx, cy, g.cw, g.ch, bg);
                 // Ghost pixels must not become locked terrain, nor be mistaken
                 // for an active tetromino in connected-component matching.
-                raw[y][x] = d > 24. && spread < 25. && !hollow[y][x];
+                raw[y][x] = d > 24. && solid_votes >= 7 && spread < 35. && !hollow[y][x];
                 outlines[y][x] = d < 12. && outline >= 3;
                 let kind = if hollow[y][x] {
                     CellKind::Uncertain
                 } else if raw[y][x] {
                     CellKind::Locked
-                } else if d < 10. && spread < 4. {
+                } else if d < 12. && empty_votes >= 7 {
                     CellKind::Empty
                 } else {
                     CellKind::Uncertain
@@ -373,6 +442,44 @@ impl Vision {
                 }
             }
             let landing = locked.dropped(loc);
+            // Some games draw the ghost at 10-20% opacity: it is too faint
+            // for the binary occupied mask, but still causes "uncertain"
+            // cells. Promote only a consistent 4-cell, same-hue faint
+            // silhouette at the physically predicted landing location.
+            let active_cells=loc.cells();
+            let active_color: [f32;3]=std::array::from_fn(|channel|
+                active_cells.iter().map(|&(x,y)|
+                    centers[(19-y) as usize*10+x as usize][channel] as f32
+                ).sum::<f32>()/4.0
+            );
+            let mut weak_ghost=Vec::new();
+            let nonoverlap=landing.cells().into_iter()
+                .filter(|p|!active_cells.contains(p)).count();
+            for (x,y) in landing.cells() {
+                if !(0..20).contains(&y) || active_cells.contains(&(x,y)) {continue}
+                let (xi,yi)=(x as usize,(19-y) as usize);
+                if o.cells[yi][xi].kind!=CellKind::Uncertain {continue}
+                if self.previous.as_ref().is_some_and(|prev|
+                    prev.cells[yi][xi].kind==CellKind::Locked) {continue}
+                let faint: [f32;3]=std::array::from_fn(|k| centers[yi*10+xi][k] as f32);
+                let a: [f32;3]=std::array::from_fn(|k|active_color[k]-bg[k] as f32);
+                let b: [f32;3]=std::array::from_fn(|k|faint[k]-bg[k] as f32);
+                let aa: f32=a.iter().map(|v|v*v).sum();
+                let bb: f32=b.iter().map(|v|v*v).sum();
+                let dot: f32=(0..3).map(|k|a[k]*b[k]).sum();
+                let ratio=if aa>0. { (bb/aa).sqrt() } else {0.};
+                if aa>400. && bb>80.
+                    && (0.08..0.85).contains(&ratio)
+                    && dot>0.94*(aa*bb).sqrt()
+                {
+                    weak_ghost.push((xi,yi));
+                }
+            }
+            if weak_ghost.len()>=nonoverlap.min(3).max(2) {
+                for (x,y) in weak_ghost {
+                    o.cells[y][x]=Cell {kind:CellKind::Ghost,confidence:0.94};
+                }
+            }
             for (x, y) in landing.cells() {
                 if (0..20).contains(&y)
                     && (outlines[(19 - y) as usize][x as usize]
