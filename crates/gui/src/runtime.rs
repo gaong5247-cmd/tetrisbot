@@ -404,9 +404,10 @@ impl Runtime {
     // longer reversible and must never be automatically retried.
     let mut hard_drop_sent=false;
     let mut lock_diagnostics = LockDiagnostics::default();
+    let mut garbage_lines = 0u8;
     let outcome=(||->Result<()> {
      let initial=PlanningSnapshot::from_observation(&observation,baseline)?;
-     let snapshot=initial.snapshot;
+     let mut snapshot=initial.snapshot;
      // CC2 always receives only the current piece; the simulated reserve is
      // never a real HOLD action. No future-piece HUD data is observed.
      let _=etx.send(Event::Status("Cold Clear 2 (current piece only; no NEXT/HOLD scan)".into()));
@@ -415,7 +416,7 @@ impl Runtime {
      phase="engine suggestion";
      recovery_snapshot=Some(snapshot.clone());
      let start=Instant::now();
-     let (moves, restarted)=suggest_current_with_restart(
+     let (mut moves, restarted)=suggest_current_with_restart(
          &mut client, &cfg.engine_path,
          Duration::from_millis(cfg.engine_timeout_ms), &snapshot)?;
      let elapsed=start.elapsed().as_secs_f64()*1000.;
@@ -438,11 +439,30 @@ impl Runtime {
      // No NEXT/HOLD: capture only the 10x20 board, not the entire 22x22 ROI.
      let board_capture_rect=grid.rect();
      let fresh=Arc::new(capture::capture(board_capture_rect,frame.sequence+1)?);
-     let current=vision.observe(&fresh,grid);
-     let current_snapshot=PlanningSnapshot::from_observation(&current,baseline)?.snapshot;
+     let mut current=vision.observe(&fresh,grid);
+     let mut current_snapshot=PlanningSnapshot::from_observation(&current,baseline)?.snapshot;
+     // A multiplayer garbage packet can land while the solver is working.
+     // Re-solve from the new observed stack ONLY for an exact, non-clipping
+     // bottom rise with visible holes. This is before any key is sent.
+     if cfg.multiplayer_attack_mode
+         && current_snapshot.active.piece==snapshot.active.piece
+         && let Some(lines)=garbage_rise_lines(&snapshot.board,&current_snapshot.board)
+     {
+      let _=etx.send(Event::Status(format!(
+          "{lines} incoming garbage lines detected during search; recalculating")));
+      phase="garbage replan";
+      snapshot=current_snapshot.clone();
+      recovery_snapshot=Some(snapshot.clone());
+      let (new_moves,_)=suggest_current_with_restart(
+          &mut client,&cfg.engine_path,Duration::from_millis(cfg.engine_timeout_ms),&snapshot)?;
+      moves=new_moves;
+      let refreshed=capture::capture(board_capture_rect,frame.sequence+4)?;
+      current=vision.observe(&refreshed,grid);
+      current_snapshot=PlanningSnapshot::from_observation(&current,baseline)?.snapshot;
+     }
      if current_snapshot.board!=snapshot.board
          || current_snapshot.active.piece!=snapshot.active.piece
-     {bail!("state changed during engine search")}
+     {bail!("state changed during engine search (possible unverified garbage attack)")}
      // Ignore every suggestion for any piece other than the observed active.
      let chosen=moves.iter()
         .filter(|m| m.location.piece == current_snapshot.active.piece)
@@ -488,9 +508,16 @@ impl Runtime {
         keyboard.check()?;
         let step_frame=capture::capture(board_capture_rect,frame.sequence+2)?;
         let step_observation=vision.observe(&step_frame,grid);
+        let frame_board=Board::from_visible(&step_observation.cells,baseline).ok();
+        if cfg.multiplayer_attack_mode
+            && frame_board.as_ref().is_some_and(|b|
+                garbage_rise_lines(&snapshot.board,b).is_some())
+        {
+            bail!("incoming multiplayer garbage rose during movement; safe replan requested")
+        }
         let verified=step_observation.confidence>=0.9
             && step_observation.active.is_some()
-            && Board::from_visible(&step_observation.cells,baseline).is_ok_and(|b| b==snapshot.board);
+            && frame_board.is_some_and(|b| b==snapshot.board);
         // For horizontal moves the active piece's x must actually change.
         // Merely seeing an active tetromino again does NOT prove that the game
         // accepted SendInput; otherwise bot keeps moving on a stale model.
