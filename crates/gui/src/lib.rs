@@ -90,7 +90,6 @@ pub struct Debugger {
     armed: bool,
     busy: bool,
     baseline: bool,
-    empty_hold: bool,
     debug: bool,
     always_on_top: bool,
     /// Changed game controls are inactive until the worker is restarted.
@@ -125,7 +124,6 @@ impl Debugger {
             armed: false,
             busy: false,
             baseline: false,
-            empty_hold: false,
             debug: true,
             always_on_top: true,
             profile_pending: false,
@@ -172,7 +170,6 @@ impl Debugger {
         self.busy = false;
         self.armed = false;
         self.baseline = false;
-        self.empty_hold = false;
         self.recovery_attempts = 0;
         self.profile_pending = false;
         self.view = None;
@@ -283,10 +280,7 @@ impl Debugger {
             return;
         }
         let Some(g) = v.grid else { return };
-        let mut o = v.observation.clone();
-        if self.empty_hold && o.hold == Known::Unknown {
-            o.hold = Known::Value(None);
-        }
+        let o = v.observation.clone();
         let Ok(observed_snapshot) = PlanningSnapshot::from_observation(&o, self.baseline) else {
             return;
         };
@@ -295,17 +289,15 @@ impl Debugger {
                 return;
             }
             if !runtime::same_reversible_state(expected, &observed_snapshot.snapshot) {
-                self.error = "Board, NEXT or HOLD changed during an unfinished path".into();
+                self.error = "Board or current piece changed during an unfinished path".into();
                 self.stop("Unsafe to auto-resume: game state diverged");
                 return;
             }
         }
         let key = format!(
-            "{:?}/{:?}/{:?}/{:?}",
+            "{:?}/{:?}",
             Board::from_visible(&o.cells, true).ok(),
-            o.active.map(|a| a.piece),
-            o.next,
-            o.hold
+            o.active.map(|a| a.piece)
         );
         if key == self.last_key {
             return;
@@ -327,7 +319,6 @@ impl Debugger {
             grid: g,
             observation: o,
             baseline: self.baseline,
-            empty_hold: self.empty_hold,
             execute: self.armed,
         };
         if self.runtime.jobs.try_send(job).is_ok() {
@@ -621,7 +612,6 @@ impl eframe::App for Debugger {
                             ("Rotate CCW", &mut self.cfg.controls.ccw),
                             ("Soft Drop", &mut self.cfg.controls.down),
                             ("Hard Drop", &mut self.cfg.controls.hard_drop),
-                            ("Hold", &mut self.cfg.controls.hold),
                         ] {
                             ui.label(label);
                             changed_profile |= ui.text_edit_singleline(value).changed();
@@ -650,7 +640,6 @@ impl eframe::App for Debugger {
                 if before && !self.baseline {
                     self.stop("Baseline revoked");
                 }
-                ui.checkbox(&mut self.empty_hold, "HOLD known empty at this baseline");
             });
             ui.horizontal(|ui| {
                 ui.label("Monitor");
@@ -683,7 +672,7 @@ impl eframe::App for Debugger {
         });
         egui::SidePanel::right("stats").min_width(245.).show(ctx,|ui|{
    ui.heading("State & Diagnostics");ui.colored_label(if self.armed {Color32::LIGHT_GREEN}else{Color32::GRAY},if self.armed{"AI ARMED"}else{"INPUT DISABLED"});
-   if let Some(v)=&self.view {let o=&v.observation;ui.label(format!("Current: {:?}",o.active));ui.label(format!("HOLD: {:?}",o.hold));ui.label(format!("NEXT: {:?}",o.next));ui.label(format!("Cell confidence: {:.1}%",o.confidence*100.));if o.active.is_some() && (o.next.len()<3 || o.hold==Known::Unknown) {ui.colored_label(Color32::LIGHT_BLUE,"Limited CC2 mode: current piece only / HOLD disabled");}for reason in &o.reasons{ui.colored_label(Color32::YELLOW,reason);} }
+   if let Some(v)=&self.view {let o=&v.observation;ui.label(format!("Current piece: {:?}",o.active));ui.label(format!("Cell confidence: {:.1}%",o.confidence*100.));ui.colored_label(Color32::LIGHT_BLUE,"Current-piece-only CC2 mode | NEXT/HOLD scanning removed");for reason in &o.reasons{ui.colored_label(Color32::YELLOW,reason);} }
    ui.separator();ui.label(format!("Suggested: {:?}",self.moves.first()));ui.label(format!("Last verified move: {}",self.completed));
    for (name,t) in [("Capture",&self.capture),("Vision",&self.vision),("Search",&self.search),("Input",&self.input),("Verify",&self.verify)] {let r=t.report();ui.label(format!("{name}: {:.2} ms / p95 {:.2}",r.mean_ms,r.p95_ms));}
    ui.separator();ui.label(&self.status);if !self.error.is_empty(){ui.colored_label(Color32::LIGHT_RED,format!("Last verification error: {}",self.error));}
@@ -828,7 +817,7 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
                 continue;
             }
             if !runtime::same_reversible_state(expected, &observed.snapshot) {
-                failures.push("headless board/queue/HOLD diverged before retry".into());
+                failures.push("headless board/current piece diverged before retry".into());
                 break;
             }
             recovery_guard = None;
@@ -842,8 +831,8 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
         }
         let key = format!(
             "{:?}/{:?}",
-            v.observation.active.map(|a| a.piece),
-            v.observation.next
+            Board::from_visible(&v.observation.cells, true).ok(),
+            v.observation.active.map(|a| a.piece)
         );
         if key == last {
             continue;
@@ -859,7 +848,6 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
             grid: g,
             observation: v.observation,
             baseline: fresh,
-            empty_hold: false,
             execute: true,
         })?;
         busy = true;
