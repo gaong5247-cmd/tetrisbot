@@ -3,7 +3,18 @@ capture_hz = 60
 engine_path = "engines/cold-clear-2.exe"
 engine_timeout_ms = 3000
 verification_timeout_ms = 1500
-allow_external = false
+allow_external = true
+# External games are allowed only after Start AI; target window must be foreground.
+
+# Edit these to match your game's Settings -> Controls.
+[controls]
+left = "Left"
+right = "Right"
+cw = "X"
+ccw = "Z"
+down = "Down"
+hard_drop = "Space"
+hold = "C"
 
 [detection]
 stable_frames = 5
