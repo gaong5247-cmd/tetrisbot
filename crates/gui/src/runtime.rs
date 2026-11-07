@@ -307,7 +307,7 @@ impl Runtime {
      validate_input_target(&title,cfg.allow_external)?;
      // Key bindings are selected by the user for this game, not hard-coded
      // to Local Lab. Foreground and cancellation are still checked per key.
-     let mut keyboard=Keyboard::with_bindings(cancel.clone(),target,cfg.controls.clone());
+     let mut keyboard=Keyboard::with_bindings(cancel.clone(),target,cfg.controls.clone())?;
      keyboard.check()?;
      // Recapture after engine search: active gravity may have advanced since the request.
      let mut vision=vision::Vision::default();vision.seed(&observation);vision.observe(&frame,grid);
