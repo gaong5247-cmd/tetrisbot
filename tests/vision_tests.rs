@@ -244,3 +244,31 @@ fn hud_pixels_do_not_affect_current_piece_or_locked_board() {
     assert_eq!(changed.hold, Known::Unknown);
     assert!(PlanningSnapshot::from_observation(&changed, true).unwrap().restricted_no_hold);
 }
+
+
+/// Production per-action verification now captures only the actual 10x20
+/// grid instead of the surrounding HUD; pixel coordinates remain absolute.
+#[test]
+fn board_only_cropped_frame_preserves_current_piece_and_stack() {
+    let (full, grid) = fixture(1280, 720, (300, 90), 24, 0, true);
+    let rect = grid.rect();
+    let mut crop = capture::Frame::new(rect, [0, 0, 0, 255]);
+    for dy in 0..rect.height as usize {
+        let src_y = rect.y as usize + dy;
+        let src_x = rect.x as usize;
+        let src_start = (src_y * full.rect.width as usize + src_x) * 4;
+        let dst_start = dy * rect.width as usize * 4;
+        let len = rect.width as usize * 4;
+        crop.rgba[dst_start..dst_start + len]
+            .copy_from_slice(&full.rgba[src_start..src_start + len]);
+    }
+    let whole = vision::Vision::default().observe(&full, grid);
+    let cropped = vision::Vision::default().observe(&crop, grid);
+    assert_eq!(whole.active.unwrap().piece, cropped.active.unwrap().piece);
+    assert_eq!(whole.active.unwrap().cells(), cropped.active.unwrap().cells());
+    assert_eq!(whole.confidence, cropped.confidence);
+    assert_eq!(Board::from_visible(&whole.cells, true).unwrap(),
+               Board::from_visible(&cropped.cells, true).unwrap());
+    assert_eq!(rect.width, 240);
+    assert_eq!(rect.height, 480);
+}
