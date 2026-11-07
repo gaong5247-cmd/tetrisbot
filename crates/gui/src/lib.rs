@@ -91,6 +91,8 @@ pub struct Debugger {
     empty_hold: bool,
     debug: bool,
     always_on_top: bool,
+    /// Changed game controls are inactive until the worker is restarted.
+    profile_pending: bool,
     /// Expected unchanged stack/queue after a reversible, unfinished move.
     recovery: Option<(Snapshot, Instant)>,
     recovery_attempts: u8,
@@ -124,6 +126,7 @@ impl Debugger {
             empty_hold: false,
             debug: true,
             always_on_top: true,
+            profile_pending: false,
             recovery: None,
             recovery_attempts: 0,
             mode: Mode::Original,
@@ -153,6 +156,26 @@ impl Debugger {
         }
         let _ = self.runtime.jobs.try_send(Job::Reset);
         self.status = reason.into();
+    }
+    fn apply_game_profile(&mut self) {
+        if let Err(e) = self.cfg.controls.validate() {
+            self.error = format!("Invalid game controls: {e}");
+            return;
+        }
+        // Do not hot-swap key mappings while the input worker is armed.
+        self.stop("Game profile applied; confirm fresh game state before Start AI");
+        self.runtime = Runtime::start(self.cfg.clone());
+        self.last_generation = 0;
+        self.last_key.clear();
+        self.busy = false;
+        self.armed = false;
+        self.baseline = false;
+        self.empty_hold = false;
+        self.recovery_attempts = 0;
+        self.profile_pending = false;
+        self.view = None;
+        self.texture = None;
+        self.error.clear();
     }
     fn update_workers(&mut self) {
         while let Ok(v) = self.runtime.views.try_recv() {
@@ -517,7 +540,7 @@ impl eframe::App for Debugger {
                     self.preview = true;
                 }
                 if ui
-                    .add_enabled(self.baseline && !self.busy, egui::Button::new("Start AI"))
+                    .add_enabled(self.baseline && !self.busy && !self.profile_pending, egui::Button::new("Start AI"))
                     .clicked()
                 {
                     self.runtime.cancel.reset();
@@ -546,15 +569,19 @@ impl eframe::App for Debugger {
                     self.stop("Emergency stop; all owned keys released");
                 }
                 if ui.button("Save Configuration").clicked() {
-                    let save = std::fs::create_dir_all("config").and_then(|_| {
-                        std::fs::write(
-                            "config/local.toml",
-                            toml::to_string_pretty(&self.cfg).unwrap(),
-                        )
-                    });
-                    match save {
-                        Ok(()) => self.status = "Saved config/local.toml".into(),
-                        Err(e) => self.error = e.to_string(),
+                    if let Err(e) = self.cfg.controls.validate() {
+                        self.error = format!("Cannot save invalid key bindings: {e}");
+                    } else {
+                        let save = std::fs::create_dir_all("config").and_then(|_| {
+                            std::fs::write(
+                                "config/local.toml",
+                                toml::to_string_pretty(&self.cfg).unwrap(),
+                            )
+                        });
+                        match save {
+                            Ok(()) => self.status = "Saved config/local.toml".into(),
+                            Err(e) => self.error = e.to_string(),
+                        }
                     }
                 }
                 ui.checkbox(&mut self.debug, "Debug Mode");
@@ -568,6 +595,44 @@ impl eframe::App for Debugger {
                     ));
                 }
             });
+            let mut changed_profile = false;
+            let mut apply_profile = false;
+            ui.horizontal_wrapped(|ui| {
+                changed_profile |= ui.checkbox(&mut self.cfg.allow_external, "Allow external Tetris games").changed();
+                if ui.button("Apply Game Profile").clicked() {
+                    apply_profile = true;
+                }
+                if self.profile_pending {
+                    ui.colored_label(Color32::YELLOW, "Pending changes: click Apply before Start AI");
+                }
+            });
+            egui::CollapsingHeader::new("Game Keyboard Bindings")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label("Set these to the keys used by the detected game (not its block colors).");
+                    egui::Grid::new("game-keymap").num_columns(2).show(ui, |ui| {
+                        for (label, value) in [
+                            ("Left", &mut self.cfg.controls.left),
+                            ("Right", &mut self.cfg.controls.right),
+                            ("Rotate CW", &mut self.cfg.controls.cw),
+                            ("Rotate CCW", &mut self.cfg.controls.ccw),
+                            ("Soft Drop", &mut self.cfg.controls.down),
+                            ("Hard Drop", &mut self.cfg.controls.hard_drop),
+                            ("Hold", &mut self.cfg.controls.hold),
+                        ] {
+                            ui.label(label);
+                            changed_profile |= ui.text_edit_singleline(value).changed();
+                            ui.end_row();
+                        }
+                    });
+                    ui.small("Examples: Left, Right, Up, Down, X, Z, Space, Shift, C. F10 stays reserved for emergency stop.");
+                });
+            if changed_profile {
+                self.profile_pending = true;
+            }
+            if apply_profile {
+                self.apply_game_profile();
+            }
             ui.horizontal(|ui| {
                 let before = self.baseline;
                 ui.checkbox(
