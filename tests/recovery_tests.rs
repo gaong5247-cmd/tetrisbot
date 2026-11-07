@@ -311,3 +311,62 @@ fn stale_fullscreen_scan_does_not_invalidate_locked_board() {
     assert_eq!(t.state, State::Lost);
     assert!(!t.may_input());
 }
+
+
+#[test]
+fn keyboard_scancode_and_vk_profiles_can_be_selected() {
+    use input::{InputMethod, KeyBindings};
+    let mut controls = KeyBindings::default();
+    assert_eq!(controls.input_method, InputMethod::ScanCode);
+    controls.validate().unwrap();
+    assert_eq!(
+        serde_json::to_value(&controls).unwrap()["input_method"],
+        "scan_code"
+    );
+    controls.input_method = InputMethod::VirtualKey;
+    controls.validate().unwrap();
+    let json = serde_json::to_value(&controls).unwrap();
+    assert_eq!(json["input_method"], "virtual_key");
+    let decoded: KeyBindings = serde_json::from_value(json).unwrap();
+    assert_eq!(decoded.input_method, InputMethod::VirtualKey);
+    assert_eq!(decoded.key(movement::Action::HardDrop).unwrap(), 0x20);
+}
+
+#[test]
+fn post_lock_diagnostics_identify_ignored_drop_vs_missing_spawn() {
+    use gui::runtime::LockDiagnostics;
+    let mut o = Observation::default();
+    o.cells = [[Cell {kind: CellKind::Empty, confidence: 1.0}; 10];20];
+    o.confidence = 0.99;
+    o.active = Some(Location::spawn(Piece::T));
+    let mut expected = Board::default();
+    expected.rows[0] = 1 << 5;
+    let mut diag = LockDiagnostics::default();
+    assert!(!diag.observe(&o, &expected));
+    assert_eq!(diag.report()["classification"], "board_mismatch_or_hard_drop_not_received");
+    assert_eq!(diag.report()["board_difference_cells"], 1);
+    o.cells[19][5].kind = CellKind::Locked;
+    o.active = None;
+    o.confidence = 0.4;
+    assert!(!diag.observe(&o, &expected));
+    assert_eq!(diag.report()["classification"], "next_active_not_visible");
+    o.active = Some(Location::spawn(Piece::I));
+    o.confidence = 0.99;
+    assert!(!diag.observe(&o, &expected));
+    assert_eq!(diag.report()["classification"], "verified");
+    assert!(diag.observe(&o, &expected), "two stable verified frames required");
+    o.cells[2][4].kind = CellKind::Uncertain;
+    assert!(!diag.observe(&o, &expected));
+    assert_eq!(diag.report()["classification"], "uncertain_board_or_animation");
+}
+
+#[test]
+fn harddrop_pulse_crosses_multiple_60fps_frame_boundaries() {
+    let p = movement::MovementProfile::default();
+    assert!(p.hard_drop_ms >= 50);
+    assert!(p.hard_drop_ms > p.pulse_ms);
+    p.validate().unwrap();
+    let mut bad = p;
+    bad.hard_drop_ms = 1;
+    assert!(bad.validate().is_err());
+}
