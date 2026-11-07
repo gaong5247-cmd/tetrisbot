@@ -683,7 +683,7 @@ impl eframe::App for Debugger {
         });
         egui::SidePanel::right("stats").min_width(245.).show(ctx,|ui|{
    ui.heading("State & Diagnostics");ui.colored_label(if self.armed {Color32::LIGHT_GREEN}else{Color32::GRAY},if self.armed{"AI ARMED"}else{"INPUT DISABLED"});
-   if let Some(v)=&self.view {let o=&v.observation;ui.label(format!("Current: {:?}",o.active));ui.label(format!("HOLD: {:?}",o.hold));ui.label(format!("NEXT: {:?}",o.next));ui.label(format!("Cell confidence: {:.1}%",o.confidence*100.));for reason in &o.reasons{ui.colored_label(Color32::YELLOW,reason);} }
+   if let Some(v)=&self.view {let o=&v.observation;ui.label(format!("Current: {:?}",o.active));ui.label(format!("HOLD: {:?}",o.hold));ui.label(format!("NEXT: {:?}",o.next));ui.label(format!("Cell confidence: {:.1}%",o.confidence*100.));if o.active.is_some() && (o.next.len()<3 || o.hold==Known::Unknown) {ui.colored_label(Color32::LIGHT_BLUE,"Limited CC2 mode: current piece only / HOLD disabled");}for reason in &o.reasons{ui.colored_label(Color32::YELLOW,reason);} }
    ui.separator();ui.label(format!("Suggested: {:?}",self.moves.first()));ui.label(format!("Last verified move: {}",self.completed));
    for (name,t) in [("Capture",&self.capture),("Vision",&self.vision),("Search",&self.search),("Input",&self.input),("Verify",&self.verify)] {let r=t.report();ui.label(format!("{name}: {:.2} ms / p95 {:.2}",r.mean_ms,r.p95_ms));}
    ui.separator();ui.label(&self.status);if !self.error.is_empty(){ui.colored_label(Color32::LIGHT_RED,format!("Last verification error: {}",self.error));}
