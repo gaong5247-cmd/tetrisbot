@@ -438,12 +438,13 @@ fn no_t_spin_configuration_is_optional_persistent_and_disabled_by_default() {
     ).unwrap();
     assert!(!shipped.no_t_spin);
     config.no_t_spin=true;
-    let encoded=toml::to_string_pretty(&config).unwrap();
-    assert!(encoded.contains("no_t_spin = true"));
-    let decoded:gui::Config=toml::from_str(&encoded).unwrap();
+    let encoded=serde_json::to_value(&config).unwrap();
+    assert_eq!(encoded["no_t_spin"], true);
+    let decoded:gui::Config=serde_json::from_value(encoded.clone()).unwrap();
     assert!(decoded.no_t_spin);
     // Existing profiles predate this field and must continue to load.
-    let legacy=encoded.replace("no_t_spin = true\n","");
-    let old:gui::Config=toml::from_str(&legacy).unwrap();
+    let mut legacy=encoded;
+    legacy.as_object_mut().unwrap().remove("no_t_spin");
+    let old:gui::Config=serde_json::from_value(legacy).unwrap();
     assert!(!old.no_t_spin);
 }
