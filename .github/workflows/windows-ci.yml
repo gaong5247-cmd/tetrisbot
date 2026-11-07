@@ -20,12 +20,12 @@ jobs:
       - name: Package portable Windows build
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force package/engines, package/config | Out-Null
+          New-Item -ItemType Directory -Force -Path 'package/engines', 'package/config' | Out-Null
           Copy-Item target/release/silhouette-tetris.exe package/SilhouetteTetris.exe
           Copy-Item engines/cold-clear-2.exe package/engines/cold-clear-2.exe
           Copy-Item config/default.toml package/config/default.toml
-          Copy-Item 'Start egui.cmd' package/'Start egui.cmd'
-          Copy-Item 'Start Local Lab.cmd' package/'Start Local Lab.cmd'
+          Copy-Item -LiteralPath 'Start egui.cmd' -Destination 'package/Start egui.cmd'
+          Copy-Item -LiteralPath 'Start Local Lab.cmd' -Destination 'package/Start Local Lab.cmd'
           Copy-Item README.md package/README.md
       - name: Upload runnable Windows package
         uses: actions/upload-artifact@v4
