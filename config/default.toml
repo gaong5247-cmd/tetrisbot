@@ -37,6 +37,9 @@ hard_drop_ms = 65
 gap_ms = 22
 # estimated time spent capturing/verifying after each input (ms)
 feedback_ms = 30
+# 1=check each horizontal tap; 2=balanced fast default; 3=faster
+# Final pre-hard-drop landing check is always mandatory.
+horizontal_verify_stride = 2
 das_ms = 150
 arr_ms = 30
 gravity_ms = 1000

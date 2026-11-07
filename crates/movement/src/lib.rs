@@ -24,6 +24,10 @@ pub struct MovementProfile {
     /// Estimated screen capture + visual verification time after each key.
     /// The planner must include this elapsed wall-clock time in gravity/lock budget.
     pub feedback_ms: u32,
+    /// Observe every Nth repeated horizontal tap. All rotations/down taps
+    /// and the final hard-drop checkpoint remain individually verified.
+    /// 1 = conservative, 2 = balanced (default), 3 = faster.
+    pub horizontal_verify_stride: u8,
     pub das_ms: u32,
     pub arr_ms: u32,
     pub gravity_ms: u32,
@@ -39,6 +43,7 @@ impl Default for MovementProfile {
             hard_drop_ms: 65,
             gap_ms: 22,
             feedback_ms: 30,
+            horizontal_verify_stride: 2,
             das_ms: 150,
             arr_ms: 30,
             gravity_ms: 1000,
@@ -57,6 +62,7 @@ impl MovementProfile {
             || !(18..=250).contains(&self.hard_drop_ms)
             || self.pulse_ms >= self.das_ms
             || self.feedback_ms > 150
+            || !(1..=3).contains(&self.horizontal_verify_stride)
             || self.gravity_ms < self.step_ms()
             || self.lock_delay_ms < self.step_ms()
             || self.max_nodes == 0
@@ -68,6 +74,32 @@ impl MovementProfile {
     pub fn step_ms(&self) -> u32 {
         self.pulse_ms + self.gap_ms + self.feedback_ms
     }
+}
+/// Decide when a live screenshot is required after a *reversible* input.
+/// Only repeated horizontal taps may be grouped; gravity-sensitive Down,
+/// rotation and T-spin setup are always observed individually. For a simple
+/// no-spin placement, the mandatory pre-hard-drop screenshot already verifies
+/// the final lateral move, so the extra immediately preceding capture is
+/// redundant.
+pub fn should_verify_after_action(
+    actions: &[Action],
+    index: usize,
+    spin: Spin,
+    horizontal_stride: u8,
+) -> bool {
+    let Some(&action) = actions.get(index) else { return false };
+    if action == Action::HardDrop { return false }
+    if spin != Spin::None { return true }
+    if !matches!(action, Action::Left | Action::Right) { return true }
+    let next = actions.get(index + 1).copied();
+    if next == Some(Action::HardDrop) && horizontal_stride > 1 {
+        return false; // The immediate pre-drop checkpoint covers this action.
+    }
+    if next != Some(action) { return true }
+    let start = actions[..index].iter()
+        .rposition(|a| *a != action).map_or(0, |n| n + 1);
+    let count_in_run = index - start + 1;
+    count_in_run % horizontal_stride.max(1) as usize == 0
 }
 fn offsets(p: Piece, r: Rotation) -> [(i8, i8); 5] {
     match p {

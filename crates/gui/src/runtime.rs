@@ -5,7 +5,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use detection::{Grid, State, Tracker, scan};
 use game_state::*;
 use input::{Cancellation, Keyboard, StopReason};
-use movement::{Action, plan};
+use movement::{Action, plan, should_verify_after_action};
 use std::path::Path;
 use std::{
     sync::{
@@ -407,7 +407,9 @@ impl Runtime {
      keyboard.check()?;
      // Recapture after engine search: active gravity may have advanced since the request.
      let mut vision=vision::Vision::default();vision.seed(&observation);vision.observe(&frame,grid);
-     let fresh=Arc::new(capture::capture(frame.rect,frame.sequence+1)?);
+     // No NEXT/HOLD: capture only the 10x20 board, not the entire 22x22 ROI.
+     let board_capture_rect=grid.rect();
+     let fresh=Arc::new(capture::capture(board_capture_rect,frame.sequence+1)?);
      let current=vision.observe(&fresh,grid);
      let current_snapshot=PlanningSnapshot::from_observation(&current,baseline)?.snapshot;
      if current_snapshot.board!=snapshot.board
@@ -423,13 +425,17 @@ impl Runtime {
      }
      phase="execute path";actions=chosen.actions.clone();placement=Some(chosen.placement);
      let mut trusted=current.clone();
+     // Accumulate unchecked horizontal taps so one screenshot can verify
+     // their total observed displacement; a missed input is not silently
+     // accepted. T-spins and rotations still get per-action screenshots.
+     let mut pending_dx=0i8;
      let start=Instant::now();
-     for &a in &chosen.actions {
+     for (action_index, &a) in chosen.actions.iter().enumerate() {
       last_action=Some(a);
       keyboard.check()?;
       if a==Action::HardDrop {
        // Last reversible checkpoint: observe exact active landing before committing.
-       let f=capture::capture(frame.rect,frame.sequence+2)?;let o=vision.observe(&f,grid);
+       let f=capture::capture(board_capture_rect,frame.sequence+2)?;let o=vision.observe(&f,grid);
        let b=Board::from_visible(&o.cells,baseline).with_context(||format!("pre-drop uncertain at {:?}; active {:?}",o.cells.iter().enumerate().flat_map(|(y,row)|row.iter().enumerate().filter_map(move |(x,c)|(c.kind==CellKind::Uncertain).then_some((x,y)))).collect::<Vec<_>>(),o.active))?;let active=o.active.context("lost active piece before hard drop")?;
        if o.confidence<0.9||b!=snapshot.board||!b.dropped(active).same_cells(chosen.placement.location) {bail!("pre-drop visual checkpoint disagrees with plan")}
        trusted=o;
@@ -437,14 +443,22 @@ impl Runtime {
       if a == Action::HardDrop {hard_drop_sent=true;}
       keyboard.pulse(a,&cfg.movement)?;
       completed_actions+=1;
-      if a!=Action::HardDrop {
+      match a {
+       Action::Left => pending_dx -= 1,
+       Action::Right => pending_dx += 1,
+       _ => {}
+      }
+      let check_now=should_verify_after_action(
+          &chosen.actions,action_index,chosen.placement.spin,
+          cfg.movement.horizontal_verify_stride);
+      if check_now {
        // A single ghost/stack-contact animation frame is not proof that a
        // T-spin failed. Reobserve briefly, but do not send the next key until
        // the active piece and unchanged locked stack are both verified.
        let deadline=Instant::now()+Duration::from_millis(220);
        loop {
         keyboard.check()?;
-        let step_frame=capture::capture(frame.rect,frame.sequence+2)?;
+        let step_frame=capture::capture(board_capture_rect,frame.sequence+2)?;
         let step_observation=vision.observe(&step_frame,grid);
         let verified=step_observation.confidence>=0.9
             && step_observation.active.is_some()
@@ -452,14 +466,18 @@ impl Runtime {
         // For horizontal moves the active piece's x must actually change.
         // Merely seeing an active tetromino again does NOT prove that the game
         // accepted SendInput; otherwise bot keeps moving on a stale model.
-        let movement_accepted=match (trusted.active,step_observation.active,a) {
-            (Some(before),Some(after),Action::Left) => after.piece==before.piece && after.x==before.x-1,
-            (Some(before),Some(after),Action::Right) => after.piece==before.piece && after.x==before.x+1,
-            (Some(before),Some(after),Action::Down) => after.piece==before.piece && after.y<before.y,
+        let movement_accepted=match (trusted.active,step_observation.active) {
+            (Some(before),Some(after)) if pending_dx!=0 => {
+                after.piece==before.piece && after.x==before.x+pending_dx
+            }
+            (Some(before),Some(after)) if a==Action::Down => {
+                after.piece==before.piece && after.y<before.y
+            }
             _=>true,
         };
         if verified && movement_accepted {
             trusted=step_observation;
+            pending_dx=0;
             break;
         }
         // Do not contaminate temporal tracking with an untrusted frame.
@@ -483,7 +501,7 @@ impl Runtime {
      let mut verified=None;
      while verify_start.elapsed()<Duration::from_millis(cfg.verification_timeout_ms) {
       keyboard.check()?;
-      let f=capture::capture(frame.rect,frame.sequence+3)?;
+      let f=capture::capture(board_capture_rect,frame.sequence+3)?;
       let o=verifier.observe(&f,grid);
       if lock_diagnostics.observe(&o,&chosen.expected) {
        verified=Some(o);
@@ -493,7 +511,9 @@ impl Runtime {
       // pre-drop reference so the next actual spawn can be distinguished from
       // the four cells that just locked.
       verifier.seed(&trusted);
-      std::thread::sleep(Duration::from_millis(16));
+      // Capturing the board already takes measurable time; a shorter poll
+      // avoids idling for another full 60fps frame on every verified lock.
+      std::thread::sleep(Duration::from_millis(8));
      }
      let observation=verified.with_context(||format!(
          "post-lock board/current-piece verification timed out: {} ({} frames; board_delta={:?}; confidence={:.2}; active={:?}; uncertain={})",

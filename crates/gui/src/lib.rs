@@ -158,8 +158,8 @@ impl Debugger {
         self.status = reason.into();
     }
     fn apply_game_profile(&mut self) {
-        if let Err(e) = self.cfg.controls.validate() {
-            self.error = format!("Invalid game controls: {e}");
+        if let Err(e) = self.cfg.controls.validate().and_then(|_| self.cfg.movement.validate()) {
+            self.error = format!("Invalid game / speed profile: {e}");
             return;
         }
         // Do not hot-swap key mappings while the input worker is armed.
@@ -640,12 +640,21 @@ impl eframe::App for Debugger {
                     });
                     ui.small("Examples: Left, Right, Up, Down, X, Z, Space, Shift, C. F10 stays reserved for emergency stop.");
                 });
+            egui::CollapsingHeader::new("Placement Speed & Safety")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label("Horizontal screenshot frequency:");
+                    changed_profile |= ui.add(
+                        egui::Slider::new(&mut self.cfg.movement.horizontal_verify_stride, 1..=3)
+                            .text("horizontal taps/check")
+                    ).changed();
+                    ui.small("1 = every tap (conservative), 2 = balanced default, 3 = faster. Rotations and soft drops stay checked; the hard-drop landing is ALWAYS checked.");
+                    ui.small("Changes require Apply Game Profile and a fresh-game baseline. If a game misses keys, use 1.");
+                });
             if changed_profile {
                 self.profile_pending = true;
-                // Never keep sending keys under an old mapping after the user
-                // changes the game profile. Require explicit Apply and re-arm.
                 if self.armed || self.busy {
-                    self.stop("Game controls changed; apply profile before resuming AI");
+                    self.stop("Placement speed changed; Apply Game Profile before resuming AI");
                 }
             }
             if apply_profile {
