@@ -38,6 +38,8 @@ struct Start {
     hold: Option<Piece>,
     combo: u32,
     back_to_back: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    randomizer: Option<serde_json::Value>,
 }
 pub struct Client {
     child: Child,
@@ -106,8 +108,14 @@ impl Client {
             .context("TBP timeout or stdout disconnected")?
     }
     pub fn start(&mut self, s: &Snapshot) -> Result<()> {
-        if s.next.len() < 3 {
-            bail!("insufficient observed queue")
+        self.start_with_mode(s, false)
+    }
+    /// A short/unknown preview must not cause us to invent future pieces.
+    /// Seven-bag speculation is requested only for constrained single-piece
+    /// mode; a real observed NEXT queue remains authoritative when available.
+    pub fn start_with_mode(&mut self, s: &Snapshot, restricted: bool) -> Result<()> {
+        if s.queue().is_empty() {
+            bail!("no observed current tetromino")
         }
         self.send(&Start {
             kind: "start",
@@ -116,6 +124,7 @@ impl Client {
             hold: s.hold,
             combo: s.combo,
             back_to_back: s.back_to_back,
+            randomizer: restricted.then(|| json!({"type":"seven_bag","bag_state":[]})),
         })
     }
     pub fn suggest(&mut self) -> Result<Vec<Placement>> {
@@ -148,8 +157,11 @@ impl Client {
         self.send(&json!({"type":"stop"}))
     }
     pub fn resync(&mut self, s: &Snapshot) -> Result<()> {
+        self.resync_with_mode(s, false)
+    }
+    pub fn resync_with_mode(&mut self, s: &Snapshot, restricted: bool) -> Result<()> {
         self.stop()?;
-        self.start(s)
+        self.start_with_mode(s, restricted)
     }
 }
 impl Drop for Client {
