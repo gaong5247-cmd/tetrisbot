@@ -75,6 +75,32 @@ impl MovementProfile {
         self.pulse_ms + self.gap_ms + self.feedback_ms
     }
 }
+/// Decide when a live screenshot is required after a *reversible* input.
+/// Only repeated horizontal taps may be grouped; gravity-sensitive Down,
+/// rotation and T-spin setup are always observed individually. For a simple
+/// no-spin placement, the mandatory pre-hard-drop screenshot already verifies
+/// the final lateral move, so the extra immediately preceding capture is
+/// redundant.
+pub fn should_verify_after_action(
+    actions: &[Action],
+    index: usize,
+    spin: Spin,
+    horizontal_stride: u8,
+) -> bool {
+    let Some(&action) = actions.get(index) else { return false };
+    if action == Action::HardDrop { return false }
+    if spin != Spin::None { return true }
+    if !matches!(action, Action::Left | Action::Right) { return true }
+    let next = actions.get(index + 1).copied();
+    if next == Some(Action::HardDrop) {
+        return false; // The immediate pre-drop checkpoint covers this action.
+    }
+    if next != Some(action) { return true }
+    let start = actions[..index].iter()
+        .rposition(|a| *a != action).map_or(0, |n| n + 1);
+    let count_in_run = index - start + 1;
+    count_in_run % horizontal_stride.max(1) as usize == 0
+}
 fn offsets(p: Piece, r: Rotation) -> [(i8, i8); 5] {
     match p {
         Piece::O => match r {
