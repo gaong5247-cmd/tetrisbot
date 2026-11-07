@@ -189,3 +189,36 @@ fn instant_hard_drop_uses_no_ghost_position_and_no_soft_drop_on_open_board() {
         }
     }
 }
+
+
+#[test]
+fn repeated_horizontal_inputs_use_fewer_screenshots_without_skipping_t_spins() {
+    let right = Action::Right;
+    let drop = Action::HardDrop;
+    let cw = Action::Cw;
+    let down = Action::Down;
+    let no_spin = [right, right, right, drop];
+    let checks = |actions: &[Action], spin: Spin, stride: u8| {
+        (0..actions.len()).map(|i| should_verify_after_action(actions, i, spin, stride))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(checks(&no_spin, Spin::None, 1), [true, true, true, false]);
+    assert_eq!(checks(&no_spin, Spin::None, 2), [false, true, false, false]);
+    assert_eq!(checks(&no_spin, Spin::None, 3), [false, false, false, false]);
+    assert_eq!(checks(&no_spin, Spin::Full, 3), [true, true, true, false]);
+    assert_eq!(checks(&[right, right, cw, drop], Spin::None, 2),
+        [false, true, true, false]);
+    assert_eq!(checks(&[down, drop], Spin::None, 3), [true, false],
+        "soft drop needs separate contact verification");
+    assert_eq!(checks(&[Action::Left, drop], Spin::None, 1), [true, false]);
+    assert_eq!(checks(&[Action::Left, drop], Spin::None, 2), [false, false],
+        "pre-drop landing verification covers the final horizontal move");
+
+    let mut invalid = MovementProfile::default();
+    invalid.horizontal_verify_stride = 0;
+    assert!(invalid.validate().is_err());
+    invalid.horizontal_verify_stride = 4;
+    assert!(invalid.validate().is_err());
+    invalid.horizontal_verify_stride = 3;
+    invalid.validate().unwrap();
+}
