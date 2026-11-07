@@ -511,7 +511,9 @@ impl Runtime {
       // pre-drop reference so the next actual spawn can be distinguished from
       // the four cells that just locked.
       verifier.seed(&trusted);
-      std::thread::sleep(Duration::from_millis(16));
+      // Capturing the board already takes measurable time; a shorter poll
+      // avoids idling for another full 60fps frame on every verified lock.
+      std::thread::sleep(Duration::from_millis(8));
      }
      let observation=verified.with_context(||format!(
          "post-lock board/current-piece verification timed out: {} ({} frames; board_delta={:?}; confidence={:.2}; active={:?}; uncertain={})",
