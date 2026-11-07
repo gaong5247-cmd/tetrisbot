@@ -129,10 +129,19 @@ impl Client {
         loop {
             self.send(&json!({"type":"suggest"}))?;
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            let message = self
-                .rx
-                .recv_timeout(remaining)
-                .context("TBP suggestion deadline/stdout disconnected")??;
+            let message = match self.rx.recv_timeout(remaining) {
+                Ok(message) => message?,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    if let Some(status) = self.child.try_wait()? {
+                        bail!("Cold Clear 2 child exited during suggestion: {status}")
+                    }
+                    bail!("Cold Clear 2 did not respond to TBP suggest within {}ms; process still alive",self.timeout.as_millis())
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    let status = self.child.try_wait()?;
+                    bail!("Cold Clear 2 stdout disconnected while awaiting suggestion; process={status:?}")
+                }
+            };
             match message {
                 Message::Suggestion { moves, .. } if !moves.is_empty() => return Ok(moves),
                 Message::Suggestion { .. } => {}
@@ -141,7 +150,7 @@ impl Client {
             if std::time::Instant::now() >= deadline {
                 bail!("engine produced no moves within search budget")
             }
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(30));
         }
     }
     pub fn play(&mut self, p: Placement) -> Result<()> {
