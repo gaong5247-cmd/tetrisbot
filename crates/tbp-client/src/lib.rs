@@ -38,8 +38,6 @@ struct Start {
     hold: Option<Piece>,
     combo: u32,
     back_to_back: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    randomizer: Option<serde_json::Value>,
 }
 pub struct Client {
     child: Child,
@@ -110,10 +108,10 @@ impl Client {
     pub fn start(&mut self, s: &Snapshot) -> Result<()> {
         self.start_with_mode(s, false)
     }
-    /// A short/unknown preview must not cause us to invent future pieces.
-    /// Seven-bag speculation is requested only for constrained single-piece
-    /// mode; a real observed NEXT queue remains authoritative when available.
-    pub fn start_with_mode(&mut self, s: &Snapshot, restricted: bool) -> Result<()> {
+    /// Never speculate a 7-bag from invisible NEXT. Cold Clear 2's
+    /// Randomizer::Unknown expands the single observed current-piece layer
+    /// without an unbounded imaginary future search.
+    pub fn start_with_mode(&mut self, s: &Snapshot, _restricted: bool) -> Result<()> {
         if s.queue().is_empty() {
             bail!("no observed current tetromino")
         }
@@ -124,7 +122,6 @@ impl Client {
             hold: s.hold,
             combo: s.combo,
             back_to_back: s.back_to_back,
-            randomizer: restricted.then(|| json!({"type":"seven_bag","bag_state":[]})),
         })
     }
     pub fn suggest(&mut self) -> Result<Vec<Placement>> {
