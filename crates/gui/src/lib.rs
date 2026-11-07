@@ -644,6 +644,10 @@ impl eframe::App for Debugger {
                     &mut self.cfg.multiplayer_attack_mode,
                     "Multiplayer Attack (bottom garbage rises)"
                 ).changed();
+                changed_profile |= ui.checkbox(
+                    &mut self.cfg.no_t_spin,
+                    "NO T-SPIN"
+                ).changed();
                 if ui.button("Apply Game Profile").clicked() {
                     apply_profile = true;
                 }
@@ -684,10 +688,6 @@ impl eframe::App for Debugger {
             egui::CollapsingHeader::new("Placement Speed & Safety")
                 .default_open(false)
                 .show(ui, |ui| {
-                    changed_profile |= ui.checkbox(
-                        &mut self.cfg.no_t_spin,
-                        "NO T-SPIN (ordinary placements only)"
-                    ).changed();
                     ui.small("Mini/Full T-spin recommendations are excluded. If CC2 only suggests spins, calculate a reachable non-spin placement instead.");
                     ui.label("Horizontal screenshot frequency:");
                     changed_profile |= ui.add(
