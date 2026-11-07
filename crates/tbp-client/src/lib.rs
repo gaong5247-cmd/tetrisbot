@@ -42,6 +42,9 @@ struct Start {
 pub struct Client {
     child: Child,
     stdin: Option<ChildStdin>,
+    // Avoid stop() twice per placed piece when the worker already stopped
+    // this synthetic current-piece search after verifying a hard drop.
+    running: bool,
     rx: Receiver<Result<Message>>,
     pub info: String,
     pub timeout: Duration,
@@ -75,6 +78,7 @@ impl Client {
         let mut c = Self {
             child,
             stdin,
+            running: false,
             rx,
             info: String::new(),
             timeout,
@@ -122,7 +126,9 @@ impl Client {
             hold: s.hold,
             combo: s.combo,
             back_to_back: s.back_to_back,
-        })
+        })?;
+        self.running=true;
+        Ok(())
     }
     pub fn suggest(&mut self) -> Result<Vec<Placement>> {
         let deadline = std::time::Instant::now() + self.timeout;
@@ -150,7 +156,9 @@ impl Client {
             if std::time::Instant::now() >= deadline {
                 bail!("engine produced no moves within search budget")
             }
-            std::thread::sleep(Duration::from_millis(30));
+            // Cold Clear 2 expands the single observed piece quickly. Large
+            // polling gaps add avoidable thinking latency on every placement.
+            std::thread::sleep(Duration::from_millis(8));
         }
     }
     pub fn play(&mut self, p: Placement) -> Result<()> {
@@ -160,7 +168,10 @@ impl Client {
         self.send(&json!({"type":"new_piece","piece":p}))
     }
     pub fn stop(&mut self) -> Result<()> {
-        self.send(&json!({"type":"stop"}))
+        if !self.running { return Ok(()) }
+        self.send(&json!({"type":"stop"}))?;
+        self.running=false;
+        Ok(())
     }
     pub fn resync(&mut self, s: &Snapshot) -> Result<()> {
         self.resync_with_mode(s, false)
