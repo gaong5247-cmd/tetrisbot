@@ -24,6 +24,10 @@ pub struct MovementProfile {
     /// Estimated screen capture + visual verification time after each key.
     /// The planner must include this elapsed wall-clock time in gravity/lock budget.
     pub feedback_ms: u32,
+    /// Observe every Nth repeated horizontal tap. All rotations/down taps
+    /// and the final hard-drop checkpoint remain individually verified.
+    /// 1 = conservative, 2 = balanced (default), 3 = faster.
+    pub horizontal_verify_stride: u8,
     pub das_ms: u32,
     pub arr_ms: u32,
     pub gravity_ms: u32,
@@ -39,6 +43,7 @@ impl Default for MovementProfile {
             hard_drop_ms: 65,
             gap_ms: 22,
             feedback_ms: 30,
+            horizontal_verify_stride: 2,
             das_ms: 150,
             arr_ms: 30,
             gravity_ms: 1000,
@@ -57,6 +62,7 @@ impl MovementProfile {
             || !(18..=250).contains(&self.hard_drop_ms)
             || self.pulse_ms >= self.das_ms
             || self.feedback_ms > 150
+            || !(1..=3).contains(&self.horizontal_verify_stride)
             || self.gravity_ms < self.step_ms()
             || self.lock_delay_ms < self.step_ms()
             || self.max_nodes == 0
