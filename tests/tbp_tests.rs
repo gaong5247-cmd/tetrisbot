@@ -70,3 +70,38 @@ fn actual_process_death_and_timeout_fail_closed() {
     c.send(&serde_json::json!({"type":"quit"})).unwrap();
     assert!(c.receive().is_err());
 }
+
+
+#[test]
+fn actual_cold_clear_search_with_no_next_and_unknown_hold() {
+    // Only a fresh-game board and the current piece are available.
+    // No future pieces are fabricated. The reserve is an internal search-only
+    // duplicate; the game does NOT receive a Hold key.
+    let mut observed = Observation::default();
+    observed.confidence = 1.0;
+    observed.active = Some(Location::spawn(Piece::S));
+    observed.cells = [[Cell { kind: CellKind::Empty, confidence: 1.0 }; 10]; 20];
+    observed.next.clear();
+    observed.hold = Known::Unknown;
+    let limited = PlanningSnapshot::from_observation(&observed, true).unwrap();
+    assert!(limited.restricted_no_hold);
+    let mut c = Client::spawn(engine(), Duration::from_secs(7)).unwrap();
+    c.start_with_mode(&limited.snapshot, true).unwrap();
+    let moves = c.suggest().expect("CC2 should speculate beyond unknown NEXT");
+    let safe = moves.iter().copied()
+        .filter(|m| m.location.piece == Piece::S)
+        .find_map(|m| movement::plan(
+            &limited.snapshot, m, &movement::MovementProfile::default()
+        ).ok());
+    assert!(safe.is_some(), "No HOLD-free current-piece CC2 move available");
+    c.stop().unwrap();
+
+    // Repeated turns reinitialize the engine instead of advancing synthetic
+    // future-piece and reserve states.
+    let mut observed2 = observed;
+    observed2.active = Some(Location::spawn(Piece::T));
+    let limited2 = PlanningSnapshot::from_observation(&observed2, true).unwrap();
+    c.resync_with_mode(&limited2.snapshot, true).unwrap();
+    let moves2 = c.suggest().unwrap();
+    assert!(moves2.iter().any(|m| m.location.piece == Piece::T));
+}
