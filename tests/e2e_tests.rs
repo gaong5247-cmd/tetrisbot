@@ -63,3 +63,37 @@ fn repeated_rendered_turns_use_only_current_piece_without_next_or_hold() {
     }
     assert_eq!(lab.placed, 12);
 }
+
+
+#[test]
+fn no_t_spin_runs_actual_cold_clear_2_with_only_normal_placements() {
+    let mut lab = Lab::default();
+    let (_, grid) = gui::lab::fixture(1280, 720, (300, 90), 24, 0, true);
+    let mut vision = vision::Vision::default();
+    let engine = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../engines/cold-clear-2.exe");
+    let mut client = tbp_client::Client::spawn(engine, Duration::from_secs(7)).unwrap();
+    let mut profile = MovementProfile::default();
+    profile.feedback_ms = 0; // simulated Lab advances only on explicit keys
+    for turn in 0..8 {
+        let frame = lab.frame(1280, 720, (300, 90), 24, turn % 2, true);
+        let state = PlanningSnapshot::from_observation(&vision.observe(&frame, grid), true)
+            .unwrap().snapshot;
+        assert_eq!(state.board, lab.board, "turn {turn}");
+        client.resync_with_mode(&state, true).unwrap();
+        let recommendations = client.suggest().unwrap();
+        let route = movement::plan_no_t_spin(&state, &recommendations, &profile)
+            .unwrap_or_else(|err| panic!("turn {turn}: {err}"));
+        assert_eq!(route.placement.spin, Spin::None, "turn {turn}");
+        assert!(!route.uses_hold && !route.actions.contains(&Action::Hold));
+        assert_eq!(route.actions.last(), Some(&Action::HardDrop));
+        for &action in &route.actions {
+            lab.action(action);
+            let _ = vision.observe(
+                &lab.frame(1280, 720, (300, 90), 24, turn % 2, true), grid
+            );
+        }
+        assert_eq!(lab.board, route.expected, "turn {turn} post-lock state");
+        assert!(!lab.over, "turn {turn}: unexpected top-out");
+    }
+    assert_eq!(lab.placed, 8);
+}

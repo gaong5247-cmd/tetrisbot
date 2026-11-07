@@ -222,3 +222,55 @@ fn repeated_horizontal_inputs_use_fewer_screenshots_without_skipping_t_spins() {
     invalid.horizontal_verify_stride = 3;
     invalid.validate().unwrap();
 }
+
+
+#[test]
+fn no_t_spin_rejects_spin_only_engine_moves_and_uses_normal_drop() {
+    let snapshot = state(Piece::T);
+    let landing = snapshot.board.dropped(snapshot.active);
+    let only_spins = [
+        Placement { location: landing, spin: Spin::Mini },
+        Placement { location: landing, spin: Spin::Full },
+    ];
+    // No ordinary suggestions: do NOT execute the mini/full spin just to
+    // satisfy CC2; compute a reachable ordinary piece placement instead.
+    let planned = plan_no_t_spin(&snapshot, &only_spins, &MovementProfile::default()).unwrap();
+    assert_eq!(planned.placement.spin, Spin::None);
+    assert_eq!(planned.placement.location.piece, Piece::T);
+    assert!(!planned.uses_hold);
+    assert!(!planned.actions.contains(&Action::Hold));
+    assert_eq!(planned.actions.last(), Some(&Action::HardDrop));
+    let recomputed = plan(&snapshot, planned.placement, &MovementProfile::default()).unwrap();
+    assert_eq!(planned.expected, recomputed.expected);
+}
+
+#[test]
+fn no_t_spin_preserves_reachable_cc2_normal_recommendation() {
+    let snapshot = state(Piece::T);
+    let mut preferred = snapshot.board.dropped(snapshot.active);
+    preferred.x = 3;
+    let preferred = snapshot.board.dropped(preferred);
+    let normal = Placement { location: preferred, spin: Spin::None };
+    let candidates = [
+        Placement {location: snapshot.board.dropped(snapshot.active), spin: Spin::Full },
+        normal,
+    ];
+    let planned = plan_no_t_spin(&snapshot, &candidates, &MovementProfile::default()).unwrap();
+    assert_eq!(planned.placement.spin, Spin::None);
+    assert!(planned.placement.location.same_cells(normal.location));
+    assert_eq!(planned.actions.last(), Some(&Action::HardDrop));
+}
+
+#[test]
+fn no_t_spin_fallback_always_selects_current_piece_without_hold() {
+    for piece in PIECES {
+        let snapshot = state(piece);
+        let planned = plan_no_t_spin(&snapshot, &[], &MovementProfile::default())
+            .unwrap_or_else(|err| panic!("{piece:?} fallback failed: {err}"));
+        assert_eq!(planned.placement.location.piece, piece);
+        assert_eq!(planned.placement.spin, Spin::None);
+        assert!(!planned.uses_hold);
+        assert!(!planned.actions.contains(&Action::Hold));
+        assert_eq!(planned.actions.last(), Some(&Action::HardDrop));
+    }
+}
