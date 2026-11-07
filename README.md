@@ -3,7 +3,7 @@
 Windows 11 x64용 Rust/egui 화면 인식 테트리스 실험 프로젝트입니다. PNG 템플릿이나 RGB→조각 ID 표를 사용하지 않습니다. 자동 격자 탐지, 셀 특징과 시간 변화에 의한 상태 복원, 실제 Cold Clear 2 TBP 자식 프로세스, SRS 경로 탐색, SendInput 및 착수 후 검증을 포함합니다.
 
 **현재 검증 범위는 포함된 Local Lab과 절차적 테스트 장면입니다. 모든 게임에서 작동하는 완성된 범용 인식기로 간주하면 안 됩니다.** 세부 측정과 미검증 항목은 [VALIDATION.md](VALIDATION.md)에 기록합니다.
-d
+
 ## 바로 실행
 
 `Start egui.cmd`를 실행하거나 이 폴더에서:
@@ -114,6 +114,5 @@ cargo bench --bench pipeline
 테스트 이미지는 Rust 코드로 생성합니다. 런타임 템플릿이 아닙니다. TBP 통합 테스트는 실제 `engines/cold-clear-2.exe`가 없으면 실패하며 가짜 엔진으로 대체하지 않습니다. `CC2_EXE`로 다른 실제 빌드를 지정할 수 있습니다.
 
 이 프로젝트 코드는 MIT, Cold Clear 2는 MIT 또는 Apache-2.0입니다. [THIRD_PARTY.md](THIRD_PARTY.md)를 참고하십시오.
-#   t e t r i s b o t 
- 
+#   t e t r i s b o t  
  

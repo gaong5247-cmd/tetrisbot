@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.77s
+     Running ..\..\tests\tbp_tests.rs (outputs\silhouette-tetris\target\debug\deps\tbp_tests-d30ae3bfd7f8e828.exe)
+
+running 3 tests
+test exact_wire_fields_and_all_spin_values ... ok
+test actual_process_death_and_timeout_fail_closed ... ok
+test actual_cold_clear_lifecycle_and_restarts ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+

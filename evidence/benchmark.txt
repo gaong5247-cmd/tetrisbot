@@ -1,0 +1,4 @@
+   Compiling app v0.1.0 (C:\Users\user\Documents\Codex\2026-11-07\files-pasted-by-the-user-project\outputs\silhouette-tetris\crates\app)
+    Finished `bench` profile [optimized] target(s) in 5.54s
+     Running ..\..\benches\pipeline.rs (outputs\silhouette-tetris\target\release\deps\pipeline-35857b3b05ee94ac.exe)
+vision n=500 mean=0.295ms p95=0.447ms; full scan=14.110ms candidates=1

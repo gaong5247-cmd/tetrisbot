@@ -1,0 +1,11 @@
+   Compiling game-state v0.1.1 (C:\Users\user\Documents\Codex\2026-11-07\files-pasted-by-the-user-project\outputs\silhouette-tetris\crates\game-state)
+   Compiling capture v0.1.1 (C:\Users\user\Documents\Codex\2026-11-07\files-pasted-by-the-user-project\outputs\silhouette-tetris\crates\capture)
+   Compiling diagnostics v0.1.1 (C:\Users\user\Documents\Codex\2026-11-07\files-pasted-by-the-user-project\outputs\silhouette-tetris\crates\diagnostics)
+   Compiling detection v0.1.1 (C:\Users\user\Documents\Codex\2026-11-07\files-pasted-by-the-user-project\outputs\silhouette-tetris\crates\detection)
+   Compiling movement v0.1.1 (C:\Users\user\Documents\Codex\2026-11-07\files-pasted-by-the-user-project\outputs\silhouette-tetris\crates\movement)
+   Compiling tbp-client v0.1.1 (C:\Users\user\Documents\Codex\2026-11-07\files-pasted-by-the-user-project\outputs\silhouette-tetris\crates\tbp-client)
+   Compiling vision v0.1.1 (C:\Users\user\Documents\Codex\2026-11-07\files-pasted-by-the-user-project\outputs\silhouette-tetris\crates\vision)
+   Compiling input v0.1.1 (C:\Users\user\Documents\Codex\2026-11-07\files-pasted-by-the-user-project\outputs\silhouette-tetris\crates\input)
+   Compiling gui v0.1.1 (C:\Users\user\Documents\Codex\2026-11-07\files-pasted-by-the-user-project\outputs\silhouette-tetris\crates\gui)
+   Compiling app v0.1.1 (C:\Users\user\Documents\Codex\2026-11-07\files-pasted-by-the-user-project\outputs\silhouette-tetris\crates\app)
+    Finished `release` profile [optimized] target(s) in 5m 37s

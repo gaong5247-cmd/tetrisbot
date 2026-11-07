@@ -1,0 +1,30 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.1"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+crossbeam-channel = "0.5"
+toml = "0.9"
+eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "accesskit"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_HiDpi"] }
+capture = { path = "crates/capture" }
+detection = { path = "crates/detection" }
+vision = { path = "crates/vision" }
+game-state = { path = "crates/game-state" }
+tbp-client = { path = "crates/tbp-client" }
+movement = { path = "crates/movement" }
+input = { path = "crates/input" }
+gui = { path = "crates/gui" }
+diagnostics = { path = "crates/diagnostics" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

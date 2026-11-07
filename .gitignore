@@ -1,0 +1,6 @@
+/target/
+/logs/
+/config/local.toml
+*.png
+/work-*.exe
+/third_party/cold-clear-2/target/

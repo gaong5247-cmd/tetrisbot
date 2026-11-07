@@ -1,0 +1,52 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "silhouette-tetris"
+path = "src/main.rs"
+
+[dependencies]
+gui.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+capture.workspace = true
+detection.workspace = true
+vision.workspace = true
+game-state.workspace = true
+movement.workspace = true
+tbp-client.workspace = true
+input.workspace = true
+serde_json.workspace = true
+
+[[test]]
+name = "detection_tests"
+path = "../../tests/detection_tests.rs"
+
+[[test]]
+name = "vision_tests"
+path = "../../tests/vision_tests.rs"
+
+[[test]]
+name = "tbp_tests"
+path = "../../tests/tbp_tests.rs"
+
+[[test]]
+name = "movement_tests"
+path = "../../tests/movement_tests.rs"
+
+[[test]]
+name = "recovery_tests"
+path = "../../tests/recovery_tests.rs"
+
+[[bench]]
+name = "pipeline"
+path = "../../benches/pipeline.rs"
+harness = false
+
+[[test]]
+name = "e2e_tests"
+path = "../../tests/e2e_tests.rs"

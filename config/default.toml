@@ -1,0 +1,25 @@
+monitor = 0
+capture_hz = 60
+engine_path = "engines/cold-clear-2.exe"
+engine_timeout_ms = 3000
+verification_timeout_ms = 1500
+allow_external = false
+
+[detection]
+stable_frames = 5
+lock_score = 0.72
+min_cell = 6
+max_cell = 100
+edge_threshold = 8
+rescan_ms = 700
+
+[movement]
+pulse_ms = 18
+gap_ms = 22
+das_ms = 150
+arr_ms = 30
+gravity_ms = 1000
+lock_delay_ms = 500
+max_nodes = 100000
+guideline_srs = true
+soft_drop_one_cell = true

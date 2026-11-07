@@ -1,0 +1,10 @@
+[package]
+name = "vision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+capture.workspace = true
+detection.workspace = true
+game-state.workspace = true

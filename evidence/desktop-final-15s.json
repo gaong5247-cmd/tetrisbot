@@ -1,0 +1,40 @@
+{
+  "capture": {
+    "max_ms": 77.4035,
+    "mean_ms": 29.733462874251487,
+    "p95_ms": 54.9716,
+    "samples": 501
+  },
+  "confident_frames": 471,
+  "failures": [],
+  "frames": 501,
+  "input": {
+    "max_ms": 1552.9508,
+    "mean_ms": 454.28686363636365,
+    "p95_ms": 1436.648,
+    "samples": 22
+  },
+  "last_observation": "state=LOCKED active=Some(Location { piece: J, rotation: North, x: 4, y: 18 }) hold=Value(Some(O)) next=[L, T, O, I, S] confidence=0.94 reasons=[] uncertain=[]",
+  "locked_frames": 462,
+  "pps": 1.4666666666666666,
+  "search": {
+    "max_ms": 13.536,
+    "mean_ms": 0.8252391304347826,
+    "p95_ms": 0.371,
+    "samples": 23
+  },
+  "seconds": 15,
+  "verification": {
+    "max_ms": 157.87109999999998,
+    "mean_ms": 84.36653181818184,
+    "p95_ms": 124.1936,
+    "samples": 22
+  },
+  "verified_moves": 22,
+  "vision": {
+    "max_ms": 2.5584000000000002,
+    "mean_ms": 1.1113644710578843,
+    "p95_ms": 1.6074,
+    "samples": 501
+  }
+}
