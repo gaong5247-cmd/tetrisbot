@@ -4,6 +4,7 @@ use game_state::*;
 fn lock_loss_move_and_recovery() {
     let cfg = DetectionConfig {
         stable_frames: 3,
+        loss_grace_frames: 2,
         ..Default::default()
     };
     let mut t = Tracker::new(cfg);
@@ -105,6 +106,7 @@ fn attached_t_spin_keeps_grid_lock_and_temporal_piece_tracking() {
     let (_, grid) = gui::lab::fixture(1280, 720, (300, 90), 24, 0, true);
     let mut tracker = Tracker::new(DetectionConfig {
         stable_frames: 2,
+        loss_grace_frames: 2,
         ..Default::default()
     });
     let frame = lab.frame(1280, 720, (300, 90), 24, 0, true);
