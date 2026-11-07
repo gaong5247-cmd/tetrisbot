@@ -6,6 +6,9 @@ use game_state::*;
 pub struct Vision {
     previous: Option<Observation>,
     previous_raw: Option<[[bool; 10]; 20]>,
+    // Persist the actual playfield background even when multiplayer garbage
+    // occupies most of its cells. A full-board median would be garbage-colored.
+    background: Option<[u8; 3]>,
     pub motion_seen: bool,
 }
 fn median_color(v: &[[u8; 3]]) -> [u8; 3] {
@@ -48,6 +51,98 @@ fn hollow_ghost_candidate(f: &Frame, cx: f32, cy: f32, cw: f32, ch: f32, bg: [u8
         >= 3
 }
 
+/// Separate adjacent colored cells by appearance, so a weak solid ghost
+/// that touches its bright falling piece does not merge into an 8-cell blob.
+fn color_components(raw: &[[bool; 10]; 20], centers: &[[u8; 3]], bg: [u8; 3])
+    -> Vec<Vec<(i8, i8)>>
+{
+    let mut used = [[false; 10]; 20];
+    let mut out = Vec::new();
+    for y in 0..20 {
+        for x in 0..10 {
+            if !raw[y][x] || used[y][x] { continue }
+            let base = centers[y * 10 + x];
+            let strength = contrast(base, bg);
+            let mut queue = vec![(x,y)];
+            used[y][x] = true;
+            let mut n = 0;
+            while n < queue.len() {
+                let (px,py) = queue[n];
+                n += 1;
+                for (dx,dy) in [(-1,0),(1,0),(0,-1),(0,1)] {
+                    let xx=px as i32+dx;
+                    let yy=py as i32+dy;
+                    if !(0..10).contains(&xx) || !(0..20).contains(&yy) { continue }
+                    let (nx,ny)=(xx as usize,yy as usize);
+                    if used[ny][nx] || !raw[ny][nx] { continue }
+                    // Compare against the component's seed, not the preceding
+                    // neighbor, to prevent gradual shading joining a ghost.
+                    if contrast(base,centers[ny*10+nx]) > 10. + strength*0.22 {continue}
+                    used[ny][nx]=true;
+                    queue.push((nx,ny));
+                }
+            }
+            out.push(queue.into_iter().map(|(x,y)|(x as i8,19-y as i8)).collect());
+        }
+    }
+    out
+}
+fn mean_group_color(cells: &[(i8,i8)], centers: &[[u8;3]]) -> [f32;3] {
+    std::array::from_fn(|k| cells.iter()
+        .map(|&(x,y)|centers[(19-y as usize)*10+x as usize][k] as f32)
+        .sum::<f32>() / cells.len() as f32)
+}
+fn dimmer_same_hue(bright: [f32;3], dim: [f32;3], bg: [u8;3]) -> bool {
+    let a: [f32;3]=std::array::from_fn(|i|bright[i]-bg[i] as f32);
+    let b: [f32;3]=std::array::from_fn(|i|dim[i]-bg[i] as f32);
+    let aa: f32=a.iter().map(|v|v*v).sum();
+    let bb: f32=b.iter().map(|v|v*v).sum();
+    let dot: f32=(0..3).map(|i|a[i]*b[i]).sum();
+    if aa < 400. || bb < 200. {return false}
+    let ratio=(bb/aa).sqrt();
+    (0.25..0.84).contains(&ratio) && dot > 0.95*(aa*bb).sqrt()
+}
+/// Only classify a four-cell dim overlay as ghost if it is a SAME-SHAPE,
+/// same-hue dim copy at the exactly simulated landing of a brighter active
+/// piece. Real locked pieces (including garbage) are never cleared merely
+/// for being dark or sharing the active piece's color.
+fn dimmed_ghost_cells(raw: &[[bool;10];20], colors:&[[u8;3]], bg:[u8;3],
+    previous:Option<&Observation>) -> Vec<(i8,i8)>
+{
+    let groups=color_components(raw,colors,bg);
+    let shapes: Vec<_>=groups.iter().filter_map(|cells| {
+        if cells.len()!=4 {return None}
+        let shape=match_shape(cells).into_iter().next()?;
+        Some((cells,shape,mean_group_color(cells,colors)))
+    }).collect();
+    let mut strongest=None;
+    for (a,aloc,acol) in &shapes {
+        for (b,bloc,bcol) in &shapes {
+            if std::ptr::eq(*a,*b) || aloc.piece!=bloc.piece {continue}
+            if !dimmer_same_hue(*acol,*bcol,bg) {continue}
+            if aloc.y <= bloc.y {continue}
+            if previous.is_some_and(|prev| b.iter().any(|&(x,y)|
+                prev.cells[(19-y) as usize][x as usize].kind==CellKind::Locked)) {continue}
+            let mut board=Board::default();
+            for y in 0..20 {
+                for x in 0..10 {
+                    if !raw[y][x] {continue}
+                    let cell=(x as i8,19-y as i8);
+                    if a.contains(&cell) || b.contains(&cell) {continue}
+                    board.rows[19-y] |= 1<<x;
+                }
+            }
+            if board.collides(*aloc) || !board.dropped(*aloc).same_cells(*bloc) {continue}
+            let weight=acol.iter().zip(bg.iter())
+                .map(|(v,c)|(v-*c as f32).abs()).sum::<f32>();
+            if strongest.as_ref().is_none_or(|(old,_) : &(f32,Vec<(i8,i8)>)|weight>*old) {
+                strongest=Some((weight,(*b).clone()));
+            }
+        }
+    }
+    strongest.map_or_else(Vec::new,|(_,cells)|cells)
+}
+
 impl Vision {
     /// Carry trusted temporal evidence across the vision/engine worker boundary.
     /// This is an observed state, not an inferred spawn position.
@@ -78,7 +173,17 @@ impl Vision {
             })
             .collect();
         let centers: Vec<_> = features.iter().map(|p| p.0).collect();
-        let bg = median_color(&centers);
+        // The upper cells usually expose bare board background even when
+        // 16-19 lower garbage rows are filled. Once confirmed, keep that
+        // reference across rising attacks instead of using the now-majority
+        // garbage color as background.
+        let top_bg=median_color(&centers[..40]);
+        let bg=self.background.unwrap_or(top_bg);
+        if self.background.is_none() {
+            let support=centers[..40].iter()
+                .filter(|&&p|contrast(p,top_bg)<12.).count();
+            if support>=12 {self.background=Some(top_bg);}
+        }
         let mut o = Observation::default();
         let mut raw = [[false; 10]; 20];
         let mut outlines = [[false; 10]; 20];
@@ -125,6 +230,14 @@ impl Vision {
                     },
                 };
             }
+        }
+        // Find solid translucent ghost blocks BEFORE connected-components
+        // matching, otherwise they join the bright active piece into 8 cells.
+        let dimmed=dimmed_ghost_cells(&raw,&centers,bg,self.previous.as_ref());
+        for (x,y) in dimmed {
+            let (x,y)=(x as usize,(19-y) as usize);
+            raw[y][x]=false;
+            o.cells[y][x]=Cell {kind:CellKind::Ghost,confidence:0.94};
         }
         let components = components(&raw);
         let mut moving = Vec::new();
