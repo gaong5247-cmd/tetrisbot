@@ -87,6 +87,9 @@ pub struct Debugger {
     baseline: bool,
     empty_hold: bool,
     debug: bool,
+    always_on_top: bool,
+    /// Expected unchanged stack/queue after a reversible, unfinished move.
+    recovery: Option<(Snapshot, Instant)>,
     mode: Mode,
     moves: Vec<Placement>,
     last_key: String,
@@ -116,6 +119,8 @@ impl Debugger {
             baseline: false,
             empty_hold: false,
             debug: true,
+            always_on_top: true,
+            recovery: None,
             mode: Mode::Original,
             moves: vec![],
             last_key: String::new(),
@@ -133,6 +138,7 @@ impl Debugger {
     }
     fn stop(&mut self, reason: &str) {
         self.armed = false;
+        self.recovery = None;
         if reason.starts_with("Emergency stop") {
             self.runtime
                 .cancel
@@ -191,6 +197,14 @@ impl Debugger {
                     self.search.record(t);
                 }
                 Event::PreviewDone => self.busy = false,
+                Event::Recovering { reason, snapshot } => {
+                    self.busy = false;
+                    self.last_key.clear();
+                    if self.armed {
+                        self.recovery = Some((snapshot, Instant::now()));
+                        self.status = format!("Rechecking board before automatic retry: {reason}");
+                    }
+                }
                 Event::Completed {
                     observation: _,
                     input_ms,
@@ -216,6 +230,11 @@ impl Debugger {
         if self.busy || !self.preview || !self.baseline {
             return;
         }
+        if self.recovery.as_ref().is_some_and(|(_, since)| since.elapsed() > Duration::from_secs(3)) {
+            self.error = "Could not restore a verified T-spin/path state within 3 seconds".into();
+            self.stop("Recovery timed out; Start AI again only after confirming the board");
+            return;
+        }
         let Some(v) = self.view.as_ref() else { return };
         if v.state != State::Locked
             || v.observation.confidence < 0.9
@@ -228,8 +247,18 @@ impl Debugger {
         if self.empty_hold && o.hold == Known::Unknown {
             o.hold = Known::Value(None);
         }
-        if Snapshot::from_observation(&o, self.baseline).is_err() {
+        let Ok(observed_snapshot) = Snapshot::from_observation(&o, self.baseline) else {
             return;
+        };
+        if let Some((expected, since)) = &self.recovery {
+            if since.elapsed() < Duration::from_millis(120) {
+                return;
+            }
+            if !runtime::same_reversible_state(expected, &observed_snapshot) {
+                self.error = "Board, NEXT or HOLD changed during an unfinished path".into();
+                self.stop("Unsafe to auto-resume: game state diverged");
+                return;
+            }
         }
         let key = format!(
             "{:?}/{:?}/{:?}",
@@ -263,6 +292,7 @@ impl Debugger {
         if self.runtime.jobs.try_send(job).is_ok() {
             self.busy = true;
             self.last_key = key;
+            self.recovery = None;
         }
     }
     fn capture_image(&mut self, ctx: &egui::Context) {
@@ -476,6 +506,7 @@ impl eframe::App for Debugger {
                     .clicked()
                 {
                     self.runtime.cancel.reset();
+                    self.recovery = None;
                     self.armed = true;
                     self.preview = true;
                     self.last_key.clear();
@@ -511,6 +542,15 @@ impl eframe::App for Debugger {
                     }
                 }
                 ui.checkbox(&mut self.debug, "Debug Mode");
+                if ui.checkbox(&mut self.always_on_top, "Always on Top").changed() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                        if self.always_on_top {
+                            egui::WindowLevel::AlwaysOnTop
+                        } else {
+                            egui::WindowLevel::Normal
+                        },
+                    ));
+                }
             });
             ui.horizontal(|ui| {
                 let before = self.baseline;
@@ -583,7 +623,8 @@ pub fn run(cfg: Config) -> Result<()> {
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([1300., 820.])
-                .with_position([600., 20.]),
+                .with_position([600., 20.])
+                .with_always_on_top(),
             ..Default::default()
         },
         Box::new(move |cc| {
