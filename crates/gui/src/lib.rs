@@ -285,24 +285,25 @@ impl Debugger {
         if self.empty_hold && o.hold == Known::Unknown {
             o.hold = Known::Value(None);
         }
-        let Ok(observed_snapshot) = Snapshot::from_observation(&o, self.baseline) else {
+        let Ok(observed_snapshot) = PlanningSnapshot::from_observation(&o, self.baseline) else {
             return;
         };
         if let Some((expected, since)) = &self.recovery {
             if since.elapsed() < Duration::from_millis(120) {
                 return;
             }
-            if !runtime::same_reversible_state(expected, &observed_snapshot) {
+            if !runtime::same_reversible_state(expected, &observed_snapshot.snapshot) {
                 self.error = "Board, NEXT or HOLD changed during an unfinished path".into();
                 self.stop("Unsafe to auto-resume: game state diverged");
                 return;
             }
         }
         let key = format!(
-            "{:?}/{:?}/{:?}",
+            "{:?}/{:?}/{:?}/{:?}",
             Board::from_visible(&o.cells, true).ok(),
             o.active.map(|a| a.piece),
-            o.next
+            o.next,
+            o.hold
         );
         if key == self.last_key {
             return;
@@ -813,7 +814,7 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
         if !allow_input || busy || !failures.is_empty() || v.state != State::Locked {
             continue;
         }
-        let Ok(observed) = Snapshot::from_observation(&v.observation, fresh) else {
+        let Ok(observed) = PlanningSnapshot::from_observation(&v.observation, fresh) else {
             continue;
         };
         if let Some((expected, since)) = &recovery_guard {
@@ -824,7 +825,7 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
             if since.elapsed() < Duration::from_millis(120) {
                 continue;
             }
-            if !runtime::same_reversible_state(expected, &observed) {
+            if !runtime::same_reversible_state(expected, &observed.snapshot) {
                 failures.push("headless board/queue/HOLD diverged before retry".into());
                 break;
             }
