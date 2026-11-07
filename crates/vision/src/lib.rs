@@ -251,6 +251,11 @@ impl Vision {
             o.cells[y][x]=Cell {kind:CellKind::Ghost,confidence:0.94};
         }
         let components = components(&raw);
+        // On tall garbage stacks the falling piece can be in direct contact
+        // with a locked garbage wall. Binary components fuse them into one
+        // huge blob; color-separated components can still isolate the active
+        // four cells without guessing an empty row.
+        let color_groups = color_components(&raw,&centers,bg);
         let mut moving = Vec::new();
         if let Some(prev) = self.previous_raw {
             for y in 0..20 {
@@ -262,10 +267,13 @@ impl Vision {
             }
         }
         let mut hypotheses = Vec::new();
-        for c in &components {
+        for c in components.iter().chain(color_groups.iter()) {
             if c.len() == 4 {
                 let shapes = match_shape(c);
-                if !shapes.is_empty() {
+                if !shapes.is_empty()
+                    && !hypotheses.iter().any(|(existing, _): &(Vec<(i8,i8)>,Location)|
+                        existing.len()==c.len() && existing.iter().all(|cell|c.contains(cell)))
+                {
                     hypotheses.push((c.clone(), shapes[0]));
                 }
             }
