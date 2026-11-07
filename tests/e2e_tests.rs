@@ -14,6 +14,10 @@ fn thirty_rendered_turns_with_actual_engine_and_visual_verification() {
     let mut observed = vision.observe(&frame, grid);
     let engine = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../engines/cold-clear-2.exe");
     let mut client = tbp_client::Client::spawn(engine, Duration::from_secs(5)).unwrap();
+    // The synthetic Lab advances only on explicit actions: no wall-clock capture
+    // delay or gravity tick occurs between frames in this deterministic test.
+    let mut deterministic_profile = MovementProfile::default();
+    deterministic_profile.feedback_ms = 0;
     let initial = Snapshot::from_observation(&observed, true).unwrap();
     client.start(&initial).unwrap();
     for turn in 0..30 {
@@ -23,7 +27,7 @@ fn thirty_rendered_turns_with_actual_engine_and_visual_verification() {
         let moves = client.suggest().unwrap();
         let route = moves
             .into_iter()
-            .find_map(|m| plan(&state, m, &MovementProfile::default()).ok())
+            .find_map(|m| plan(&state, m, &deterministic_profile).ok())
             .expect("reachable recommendation");
         for &action in &route.actions {
             if action == Action::HardDrop {
