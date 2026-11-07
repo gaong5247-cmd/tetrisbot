@@ -158,3 +158,29 @@ fn attached_t_spin_keeps_grid_lock_and_temporal_piece_tracking() {
     assert_eq!(tracker.state, State::Lost);
     assert_eq!(old_grid.x, grid.x);
 }
+
+#[test]
+fn reversible_t_spin_recovery_requires_same_board_queue_and_hold() {
+    use gui::runtime::same_reversible_state;
+    let before = Snapshot {
+        board: Board::default(),
+        active: Location::spawn(Piece::T),
+        hold: Some(Piece::I),
+        next: vec![Piece::L, Piece::J, Piece::S],
+        combo: 2,
+        back_to_back: true,
+    };
+    let mut after = before.clone();
+    // Reversible Down/Rotate inputs can change location, not the queue.
+    after.active.y -= 1;
+    after.active.rotation = Rotation::East;
+    assert!(same_reversible_state(&before, &after));
+    after.board.rows[0] |= 1 << 4;
+    assert!(!same_reversible_state(&before, &after), "unexpected lock is irreversible");
+    after.board = before.board;
+    after.next.remove(0);
+    assert!(!same_reversible_state(&before, &after), "spawned piece changed queue");
+    after.next = before.next.clone();
+    after.hold = None;
+    assert!(!same_reversible_state(&before, &after), "HOLD changed");
+}
