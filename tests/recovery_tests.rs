@@ -370,3 +370,60 @@ fn harddrop_pulse_crosses_multiple_60fps_frame_boundaries() {
     bad.hard_drop_ms = 1;
     assert!(bad.validate().is_err());
 }
+
+
+#[test]
+fn multiplayer_garbage_rise_preserves_all_old_rows_and_visible_holes() {
+    use gui::runtime::{garbage_rise_lines,compatible_multiplayer_recovery};
+    let mut before=Board::default();
+    before.rows[0]=0b0000_0011_11;
+    before.rows[1]=0b0010_0010_00;
+    before.rows[5]=1<<6;
+    let mut after=Board::default();
+    let injected=4usize;
+    for y in 0..(20-injected) {
+        after.rows[y+injected]=before.rows[y];
+    }
+    for y in 0..injected {
+        after.rows[y]=1023 ^ (1 << (4+y));
+    }
+    assert_eq!(garbage_rise_lines(&before,&after),Some(4));
+    // The holes remain real empty cells: a solver can use them.
+    for y in 0..injected {
+        assert_eq!((after.rows[y] >> (4+y))&1,0);
+    }
+    let old=Snapshot {
+        board:before, active:Location::spawn(Piece::T),
+        hold:Some(Piece::T), next:vec![],combo:0,back_to_back:false
+    };
+    let new=Snapshot {board:after,active:old.active,..old.clone()};
+    assert!(!compatible_multiplayer_recovery(&old,&new,false));
+    assert!(compatible_multiplayer_recovery(&old,&new,true));
+    let wrong_piece=Snapshot{active:Location::spawn(Piece::I),..new.clone()};
+    assert!(!compatible_multiplayer_recovery(&old,&wrong_piece,true));
+    let mut wrong_shift=after;
+    wrong_shift.rows[7]^=1;
+    assert!(garbage_rise_lines(&before,&wrong_shift).is_none());
+    let mut solid_bottom=after;
+    solid_bottom.rows[0]=1023; // no hole means no safe garbage hypothesis
+    assert!(garbage_rise_lines(&before,&solid_bottom).is_none());
+    let mut clipped=before;
+    clipped.rows[19]=1<<3;
+    assert!(garbage_rise_lines(&clipped,&after).is_none(),
+        "never accept an attack that could hide blocks above the board");
+}
+
+#[test]
+fn multiplayer_narrow_garbage_column_remains_a_legal_open_hole() {
+    let mut board=Board::default();
+    for y in 0..16 {board.rows[y]=1023^(1<<4);}
+    let vertical=Location {
+        piece:Piece::I,rotation:Rotation::East,x:4,y:2
+    };
+    assert!(!board.collides(vertical));
+    assert_eq!(board.dropped(vertical),vertical,
+        "a vertical I-piece must be able to occupy a four-cell garbage hole");
+    let mut solved=board;
+    assert_eq!(solved.lock(vertical).unwrap(),4,
+        "four rows become complete only after a real piece fills the hole");
+}
