@@ -761,6 +761,7 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
     if allow_input && !fresh {
         bail!("--allow-input also requires --fresh-game")
     }
+    let multiplayer_attack_mode = cfg.multiplayer_attack_mode;
     let rt = Runtime::start(cfg);
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let mut busy = false;
@@ -861,7 +862,7 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
                 continue;
             }
             if !runtime::compatible_multiplayer_recovery(
-                expected, &observed.snapshot, cfg.multiplayer_attack_mode
+                expected, &observed.snapshot, multiplayer_attack_mode
             ) {
                 failures.push("headless board/current piece diverged before retry".into());
                 break;
