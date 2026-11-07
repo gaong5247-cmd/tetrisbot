@@ -1,118 +1,129 @@
 # SilhouetteTetris
 
-Windows 11 x64용 Rust/egui 화면 인식 테트리스 실험 프로젝트입니다. PNG 템플릿이나 RGB→조각 ID 표를 사용하지 않습니다. 자동 격자 탐지, 셀 특징과 시간 변화에 의한 상태 복원, 실제 Cold Clear 2 TBP 자식 프로세스, SRS 경로 탐색, SendInput 및 착수 후 검증을 포함합니다.
+**Windows 11 · Rust · egui · Cold Clear 2 · Tetris Bot Protocol (TBP)**
 
-**현재 검증 범위는 포함된 Local Lab과 절차적 테스트 장면입니다. 모든 게임에서 작동하는 완성된 범용 인식기로 간주하면 안 됩니다.** 세부 측정과 미검증 항목은 [VALIDATION.md](VALIDATION.md)에 기록합니다.
+PNG 템플릿이나 테트로미노별 고정 RGB 색상표 없이, 화면의 격자·명암 대비·실루엣·시간적 움직임으로 테트리스 게임 상태를 복원하고 **Cold Clear 2**가 추천한 착수를 실행하는 실험용 비전 봇입니다.
 
-## 바로 실행
+> **프로젝트 상태:** 포함된 Local Lab과 절차적 테스트 화면에서 검증한 초기 구현입니다. 모든 테트리스 게임/스킨과 초고속 플레이를 보장하는 완성형 범용 봇은 아닙니다. 실측치는 [VALIDATION.md](VALIDATION.md), 이전 T스핀 수정 내역은 [FIX-0.1.1.md](FIX-0.1.1.md)에 있습니다.
 
-`Start egui.cmd`를 실행하거나 이 폴더에서:
+## 주요 기능
+
+- **자동 판 탐지:** 10×20 격자 후보를 화면에서 찾고 안정적으로 추적합니다. 판의 위치를 직접 입력할 필요가 없습니다.
+- **PNG 없는 형태 인식:** Locked/Active/Ghost/Uncertain을 구분하고 NEXT/HOLD 실루엣을 분석합니다.
+- **Cold Clear 2:** 포함된 실행 파일과 TBP(JSON Lines)로 통신합니다.
+- **SRS 이동 계획:** 회전·wall kick·중력·잠금 지연을 고려한 키 입력 경로를 탐색합니다.
+- **착수 전후 검증:** 잘못 읽은 상태에서 무조건 하드드롭하지 않습니다.
+- **T스핀 경로 복구:** 잠깐 인식이 불명확한 프레임을 재확인합니다. 하드드롭 **이전**에만 보드·큐·HOLD 동일성을 검증해 최대 3회 안전하게 자동 재계획합니다. 하드드롭이 전송되었거나 실제 상태가 달라졌다면 멈춥니다.
+- **egui 디버거:** 원본/흑백/에지/격자 후보/복원 보드와 입력·엔진 상태를 표시합니다.
+- **Always on Top:** 디버거 창이 기본적으로 항상 위에 표시됩니다. GUI의 **Always on Top** 체크박스로 즉시 끌 수 있습니다.
+
+## 다운로드 후 실행
+
+Windows x64 환경에서 저장소를 내려받은 뒤 루트 폴더에서 다음 중 하나를 실행합니다.
+
+1. **`Start egui.cmd`** — 비전 디버거/컨트롤 창
+2. **`Start Local Lab.cmd`** — 테스트용 테트리스 게임
+
+또는 PowerShell에서 직접 실행:
 
 ```powershell
 .\SilhouetteTetris.exe --gui
+.\SilhouetteTetris.exe --test-game
 ```
 
-소스 빌드에는 Rust stable x64 MSVC와 Visual Studio C++ Build Tools/Windows SDK가 필요합니다. 현재 검증한 툴체인은 rustc 1.98.1입니다.
+프로그램이 처음 켜져도 자동 키 입력은 **비활성**입니다. 별도로 **Start AI**를 눌러야 합니다.
+
+> GitHub의 `SilhouetteTetris.exe`는 커밋 시점의 바이너리입니다. 소스 변경 사항은 새 바이너리를 빌드해야 적용됩니다. 이 README의 새 복구·Always on Top 수정은 제공된 기존 EXE에 자동 반영되지 않습니다.
+
+## Local Lab에서 자동 플레이하기
+
+1. 두 창을 실행하고 게임 보드가 디버거 창에 가려지지 않도록 배치합니다. Always on Top이 창을 가리면 해제하거나 위치를 옮기세요.
+2. **Auto Detect Board**로 판을 찾습니다. 상태가 `LOCKED`가 되고 10×20 복원 화면, 현재 조각, NEXT/HOLD가 맞는지 확인합니다.
+3. Local Lab에서 **Reset game**을 누른 직후 **Confirmed fresh guideline game**을 체크합니다. 이 확인은 숨겨진 행이 비어 있다는 사용자 제공 기준 상태입니다.
+4. Local Lab 기본 HOLD는 **I**입니다. **HOLD known empty**는 체크하지 마세요.
+5. **Start AI**를 누른 뒤 **Local Lab 게임 창을 클릭하여 키보드 포커스를 줍니다.** 디버거는 Always on Top이어도 게임에 키 입력 포커스를 강제로 빼앗지 않습니다.
+6. **F10**은 긴급 정지입니다. GUI의 **Pause / Stop / Emergency Stop**도 입력을 멈춥니다.
+
+기본 설정에서는 Local Lab에만 키 입력합니다(`allow_external = false`). 외부 게임을 사용하려면 해당 게임의 입력 규칙·상태 해석을 따로 검증해야 합니다. 이용이 허용된 환경에서만 실행하세요.
+
+## 조작법과 화면
+
+| 동작 | 키 |
+| --- | --- |
+| 왼쪽 / 오른쪽 | ← / → |
+| 소프트 드롭 | ↓ |
+| 시계 / 반시계 회전 | X / Z |
+| 하드 드롭 | Space |
+| HOLD | C |
+| 긴급 정지 | F10 |
+
+실제 키 매핑은 현재 Local Lab 기준으로 고정되어 있습니다. 다른 게임과 동일하다고 가정하면 안 됩니다.
+
+GUI의 `Original`, `Grayscale`, `Edges`, `Heatmap`, `Occupancy`, `Silhouettes`, `Reconstruction` 보기로 인식 단계별 문제를 확인할 수 있습니다. **Always on Top**은 디버거 창의 순서만 변경하며 게임 창의 입력 포커스를 자동 변경하지 않습니다.
+
+## T스핀 도중 멈추거나 자동 플레이가 중단될 때
+
+현재 코드는 단발성 격자 점수 저하로 판 추적 기준 상태를 즉시 폐기하지 않고, 입력 직후 잠깐 불명확한 실루엣을 다시 확인합니다.
+
+- **하드드롭 전:** 잠긴 보드·현재 조각 종류와 NEXT·HOLD가 동일하다고 다시 확인되면 현재 위치에서 경로를 재계획합니다. **최대 3회**까지만 시도합니다.
+- **하드드롭 이후 / 예상치 못한 잠금:** 자동 재시작하지 않습니다. 화면 상태가 바뀐 상태에서 재입력하면 잘못된 블록을 잠글 수 있기 때문입니다.
+- **창 포커스 상실:** 게임 창을 다시 활성화하세요. 디버거 창이 보드를 가리면 위치를 바꾸거나 Always on Top을 끄세요.
+- **실패 원인:** 실행 폴더의 `logs/last-error.json`, `logs/headless-report.json` 및 GUI의 **Last verification error**를 확인하세요.
+
+실제 게임에서 같은 문제가 계속 나면 에러 로그와 재현 상황을 확인해야 합니다. 코드상 복구 경로를 추가한 것이 모든 T스핀의 성공을 보장하지는 않습니다.
+
+## 소스 빌드
+
+Rust stable x64 MSVC와 Visual Studio C++ Build Tools, Windows SDK가 필요합니다.
 
 ```powershell
-cargo build --release --locked
+cargo fmt --all --check
 cargo test --locked
+cargo build --release --locked
 cargo run --release -- --gui
 ```
 
-Cold Clear 2 실행 파일은 `engines/cold-clear-2.exe`에 포함되어 있습니다. 소스에서 다시 빌드하려면:
+빌드된 실행 파일은 보통 `target/release/SilhouetteTetris.exe`가 아닌 **`target/release/app.exe`**일 수 있으므로, 실제 Cargo 바이너리 이름은 `crates/app/Cargo.toml`에서 확인하세요. 기존 루트 EXE를 수정했다고 가정하지 마세요.
 
-```powershell
-.\scripts\build-engine.ps1
-```
+Cold Clear 2 엔진은 `engines/cold-clear-2.exe`에 포함되며 소스는 `third_party/cold-clear-2/`에 보관됩니다. 엔진을 다시 빌드하려면 `./scripts/build-engine.ps1`을 사용합니다.
 
-엔진 소스와 라이선스는 `third_party/cold-clear-2/`에 있습니다. 네트워크 없이 소스를 보관하되 첫 Cargo 빌드에는 crates.io 의존성을 내려받아야 합니다.
-
-## 로컬 게임으로 확인
-
-1. `Start Local Lab.cmd` 또는 `cargo run --release -- --test-game`으로 게임 창을 엽니다.
-2. 디버거와 게임 창이 겹치지 않게 둡니다. 보드 좌표를 지정할 필요는 없습니다. 디버거 창의 영역은 캡처 버퍼에서 가려 자기 화면을 다시 탐지하지 않게 합니다.
-3. 디버거가 `SEARCHING → CANDIDATE → VALIDATING → LOCKED`로 바뀌고, 보드 좌표·셀 크기·현재 조각·NEXT·HOLD를 표시하는지 확인합니다.
-4. 게임을 Reset한 직후 `Confirmed fresh guideline game`을 체크합니다. 이것은 화면에서 보이지 않는 20개 행이 비어 있고 combo=0/B2B=false라는 **사용자 제공 기준 상태**입니다. 앱이 숨은 행을 추측한 것이 아닙니다.
-5. 기본 Lab HOLD는 I가 들어 있습니다. `HOLD known empty`는 체크하지 않습니다. 해당 체크는 실제 빈 HOLD를 사용자가 확인한 경우에만 사용합니다.
-6. 기준 상태가 있으면 엔진 추천이 노란 외곽선으로 표시됩니다. 이때도 키 입력은 비활성입니다.
-7. `Start AI`를 별도로 누른 뒤 게임 창에 포커스를 줍니다. 입력은 포커스가 있는 탐지 대상 창으로만 전송됩니다.
-8. `F10`은 전역 긴급 정지입니다. Pause/Stop/Emergency Stop도 입력을 취소하며, 보유 중인 키를 해제합니다.
-
-기본 입력 프로필은 Local Lab만 허용합니다. 외부 게임은 `allow_external = true`와 해당 게임에 대해 검증한 이동 프로필이 필요합니다. 이 옵션 자체가 규칙 호환성을 검증해 주지는 않습니다. 로컬·허용된 환경에서만 사용하십시오.
-
-## GUI
-
-왼쪽에는 실제 캡처와 후보/NMS 결과, 탐지 격자·중심점·신뢰도·데스크톱 좌표를 표시합니다. 중앙에는 잠긴 셀, 액티브, 고스트, 불확실한 셀, 엔진 추천을 표시합니다. 오른쪽에는 상태·통신·평균/p95 지연·검증 실패 이유가 나옵니다.
-
-`Start egui`는 실시간 프리뷰 진입점입니다. `Auto Detect Board`/`Rescan`은 좌표를 버리고 다시 탐색합니다. `Start Vision`, `Start AI`, `Pause`, `Stop`, `Emergency Stop`, `Save Configuration`, `Debug Mode`를 제공합니다. 저장된 설정은 `--config config/local.toml`로 불러옵니다. 세션의 입력 활성 상태와 숨은 행 확인은 설정 파일에 저장하지 않습니다.
-
-캡처 뷰는 Original/Grayscale/Edges/Heatmap을 제공하고 Occupancy/Silhouettes/Reconstruction으로 내부 상태를 확인할 수 있습니다. Heatmap은 후보 점수 오버레이이며 학습 모델의 픽셀 확률 지도가 아닙니다. 셀 confidence는 경험적 특징 점수이며 통계적으로 보정된 인식 정확도가 아닙니다.
-
-## Headless
-
-기본 headless는 읽기 전용입니다.
+읽기 전용 Headless 실행:
 
 ```powershell
 .\SilhouetteTetris.exe --headless --seconds 15
 ```
 
-실제 입력은 두 플래그를 모두 명시하고, 새 Local Lab을 포그라운드에 둔 경우에만 허용합니다.
+Local Lab에서만 실제 입력을 활성화하는 테스트:
 
 ```powershell
 .\SilhouetteTetris.exe --headless --allow-input --fresh-game --seconds 20
 ```
 
-결과는 표준 출력과 `logs/headless-report.json`에 저장됩니다. 검증 실패가 있으면 종료 코드가 실패가 됩니다. `--fresh-game`은 숨은 행/체인 상태에 관한 명시적 확인입니다. 중간 게임 상태에 사용하면 안 됩니다.
+## 구성
 
-## 구현 구조
+| 경로 | 역할 |
+| --- | --- |
+| `crates/capture` | Windows 캡처, ROI |
+| `crates/detection` | 보드 후보 검출·추적 |
+| `crates/vision` | 셀 점유·실루엣·HUD 인식 |
+| `crates/game-state` | 테트리스 상태와 TBP 좌표 |
+| `crates/tbp-client` | Cold Clear 2 TBP 클라이언트 |
+| `crates/movement` | 이동/회전 경로 탐색 |
+| `crates/input` | 키 입력, 포커스, 취소 |
+| `crates/gui` | egui 디버거·Local Lab·실행 파이프라인 |
+| `crates/diagnostics` | 지연과 실행 통계 |
+| `config/default.toml` | 기본 설정 |
+| `tests/` · `evidence/` | 회귀 테스트와 기존 검증 근거 |
 
-| Crate | 역할 |
-|---|---|
-| capture | 모니터 열거, 물리 픽셀 GDI 캡처, ROI, 디버거 마스킹 |
-| detection | 에지 run으로 격자 가설 생성, 반복 경계·4셀 증거 평가, NMS, 시간적 추적 |
-| vision | 배경의 적응적 색 분포와 대비/텍스처/윤곽/시간 차분, 7종 형태 매칭, HUD 실루엣 |
-| game-state | Empty/Locked/Active/Ghost/Uncertain, 관측 가능성, bottom-up 10×40 변환 |
-| tbp-client | 실제 엔진 프로세스, NDJSON, handshake, timeout, play/new_piece/resync |
-| movement | SRS true-rotation, I/O/JLSTZ kick, 충돌·중력·잠금 예산을 포함한 pulse BFS |
-| input | Windows SendInput, 키 해제 RAII, 전경 창 바인딩, F10 취소 |
-| gui | egui 디버거, 독립 Local Lab, 워커 연결과 검증 트랜잭션 |
-| diagnostics | 평균·p95·최대 지연의 제한된 표본 창 |
-| app | GUI/headless/test-game CLI |
+## 성능과 제한
 
-캡처와 인식 사이, 전체 검색과 인식 사이에는 bounded latest-frame 채널을 사용합니다. 오래된 프레임은 버립니다. 전체 스캔은 별도 스레드이며 정상 추적 중에는 보드와 HUD 주변 ROI만 캡처합니다. 추적 실패 시 ROI 주변을 먼저 검색하고 전체 모니터로 확장합니다. 엔진은 프레임마다 시작하지 않습니다. 게임 상태 이벤트에 따라 추천하며, 검증된 착수에만 `play`와 실제 관측한 새 큐 조각으로 `new_piece`를 보냅니다.
+[VALIDATION.md](VALIDATION.md)의 **기존 버전** 15초 Windows Local Lab 실측은 화면 검증 착수 22회, 약 **1.467 PPS**, 캡처 평균 **29.73ms**였습니다. 이 수치는 이번 수정 후 재측정 값이 아닙니다. 10+ PPS나 120FPS 목표를 달성했다고 주장하지 않습니다.
 
-## TBP 검증 근거
+캡처는 현재 GDI 기반이며 DXGI는 미구현입니다. 180도 회전, 게임별 DAS/ARR·비표준 SRS·다양한 HUD 스킨과 3D/격자 없는 보드는 추가 개발 및 실게임 검증이 필요합니다. 인식 신뢰도는 정답 데이터셋 기준 정확도와 다릅니다.
 
-Cold Clear 2 revision `ed8b19327b6bd1410ddd873d8611485bd45d8fae`의 `main.rs`, `lib.rs`, `tbp.rs`, `data.rs`, `movegen.rs`와 [TBP MVP 명세](https://github.com/tetris-bot-protocol/tbp-spec/blob/main/text/0000-mvp.md)를 확인했습니다.
+## 라이선스 / 원본
 
-`start.board`는 **맨 아래 행부터** 40×10이며 `queue`는 **현재 액티브 + 관측한 NEXT**입니다. 빈 HOLD를 처리하는 엔진 내부 reserve 규칙 때문에 현재 액티브를 임의로 빼지 않습니다. 추천은 `location: {type, orientation, x, y}`와 `spin: none|mini|full`입니다. I/O를 포함한 좌표는 좌상단이 아닌 SRS true-rotation 기준입니다. HOLD는 추천 조각과 액티브/HOLD/NEXT를 비교해 판정합니다.
-
-실제 엔진은 `start` 직후 아직 탐색하지 못해 빈 추천 배열을 반환할 수 있습니다. 클라이언트는 전체 timeout 내에서만 제한적으로 다시 요청합니다. timeout/EOF/프로세스 종료는 성공으로 처리하지 않습니다.
-
-## 안전한 상태 전이
-
-LOCKED 전에는 입력을 허용하지 않습니다. 셀·액티브·NEXT·HOLD·숨은 행·게임 규칙 정보가 부족하면 기다립니다. 경로 실행 전 재캡처하고, 하드드롭 직전에는 현재 보드와 액티브의 실제 착지 셀을 다시 검사합니다. 착수 후에는 예상 잠긴 보드, 새 액티브, NEXT shift, HOLD를 연속 두 프레임에서 확인합니다. 불일치 시 stop 후 일시 중단하며, 사용자가 상태를 재확인하고 Start AI로 재개할 수 있습니다.
-
-## 지원 한계 / 남은 작업
-
-- 격자 또는 반복 셀 경계와 대비가 있는 보드 extent가 필요합니다. 격자·테두리·배경 구분이 모두 없는 장면, 가려진 보드, 투명/복잡한 배경, 3D/기울어진 판은 미지원입니다.
-- 격자 없는 약한 후보는 실제 조각 이동까지 관측해야 입력 신뢰도를 얻습니다. 표준 10×20을 대상으로 하며 숨은 행을 관측한 것으로 간주하지 않습니다.
-- HUD는 주변의 고립된 4셀 형태를 다중 축척으로 찾습니다. 현재 기본 가설은 오른쪽의 수직 NEXT, 왼쪽 HOLD입니다. 가로 큐/중앙 HOLD/효과로 연결된 조각/부분 가림은 확정하지 않습니다.
-- 처음부터 스택에 붙어 있거나 가려진 액티브는 이전 프레임의 신뢰할 수 있는 잠긴 보드가 없으면 확정하지 않습니다. 메뉴/게임오버 화면에 별도 OCR 분류기는 없으며, 유효 상태가 사라지면 입력이 중단됩니다.
-- 이동은 한 키를 DAS 이전에 떼는 펄스 방식입니다. ARR 연속 반복을 이용하는 고속 실행, 180도 회전, 게임별 비표준 kick, 무한/제한 lock reset의 정밀 모델은 구현 범위 밖입니다. 중력 위상은 근사하며 하드드롭 전 화면 검사로 보완합니다.
-- 캡처는 순수 Windows GDI fallback입니다. DXGI Desktop Duplication, GPU 처리, 전체 버퍼 풀 재사용은 아직 적용하지 않았습니다. 120 FPS/10 PPS를 달성했다고 주장하지 않습니다.
-- 임의의 게임에 대한 장기 인식률·PPS와 전체 화면/다중 모니터 해상도 전환 실게임 검증은 추가로 필요합니다. 실패한 실험도 VALIDATION에 남깁니다.
-
-## 테스트와 벤치마크
-
-```powershell
-cargo test --locked
-cargo bench --bench pipeline
-```
-
-테스트 이미지는 Rust 코드로 생성합니다. 런타임 템플릿이 아닙니다. TBP 통합 테스트는 실제 `engines/cold-clear-2.exe`가 없으면 실패하며 가짜 엔진으로 대체하지 않습니다. `CC2_EXE`로 다른 실제 빌드를 지정할 수 있습니다.
-
-이 프로젝트 코드는 MIT, Cold Clear 2는 MIT 또는 Apache-2.0입니다. [THIRD_PARTY.md](THIRD_PARTY.md)를 참고하십시오.
-#   t e t r i s b o t  
- 
+- 프로젝트: [MIT License](LICENSE)
+- Cold Clear 2: [원본 저장소](https://github.com/MinusKelvin/cold-clear-2), MIT 또는 Apache-2.0
+- TBP: [tetris-bot-protocol/tbp-spec](https://github.com/tetris-bot-protocol/tbp-spec)
+- 3rd-party 고지: [THIRD_PARTY.md](THIRD_PARTY.md)
