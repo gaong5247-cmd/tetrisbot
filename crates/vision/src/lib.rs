@@ -461,7 +461,7 @@ impl Vision {
                 if o.cells[yi][xi].kind!=CellKind::Uncertain {continue}
                 if self.previous.as_ref().is_some_and(|prev|
                     prev.cells[yi][xi].kind==CellKind::Locked) {continue}
-                let faint=std::array::from_fn(|k| centers[yi*10+xi][k] as f32);
+                let faint: [f32;3]=std::array::from_fn(|k| centers[yi*10+xi][k] as f32);
                 let a: [f32;3]=std::array::from_fn(|k|active_color[k]-bg[k] as f32);
                 let b: [f32;3]=std::array::from_fn(|k|faint[k]-bg[k] as f32);
                 let aa: f32=a.iter().map(|v|v*v).sum();
