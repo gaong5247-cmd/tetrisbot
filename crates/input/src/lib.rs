@@ -241,14 +241,29 @@ pub struct Keyboard {
     pressed: Vec<u16>,
     pub cancel: Cancellation,
     pub target: isize,
-    bindings: KeyBindings,
+    key_codes: [u16; 7],
 }
 impl Keyboard {
     pub fn new(cancel: Cancellation, target: isize) -> Self {
-        Self::with_bindings(cancel, target, KeyBindings::default())
+        // The default profile is fixed and known valid.
+        Self {
+            pressed: vec![], cancel, target,
+            key_codes: [
+                key(Action::Left), key(Action::Right), key(Action::Cw),
+                key(Action::Ccw), key(Action::Down), key(Action::HardDrop), key(Action::Hold)
+            ],
+        }
     }
-    pub fn with_bindings(cancel: Cancellation, target: isize, bindings: KeyBindings) -> Self {
-        Self { pressed: vec![], cancel, target, bindings }
+    pub fn with_bindings(cancel: Cancellation, target: isize, bindings: KeyBindings) -> Result<Self> {
+        bindings.validate()?;
+        let mut key_codes = [0u16; 7];
+        for (idx, action) in [
+            Action::Left, Action::Right, Action::Cw, Action::Ccw,
+            Action::Down, Action::HardDrop, Action::Hold,
+        ].into_iter().enumerate() {
+            key_codes[idx] = bindings.key(action)?;
+        }
+        Ok(Self { pressed: vec![], cancel, target, key_codes })
     }
     pub fn check(&self) -> Result<()> {
         if let Some(reason) = self.cancel.reason() {
@@ -277,7 +292,9 @@ impl Keyboard {
     }
     pub fn pulse(&mut self, a: Action, p: &MovementProfile) -> Result<()> {
         self.check()?;
-        let vk = self.bindings.key(a)?;
+        // Virtual keys were validated and resolved when the worker started.
+        // Avoid allocating/parsing Strings on the hot input path.
+        let vk = self.key_codes[a as usize];
         send(vk, false)?;
         self.pressed.push(vk);
         let result = self.wait(p.pulse_ms);
