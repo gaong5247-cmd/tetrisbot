@@ -19,6 +19,11 @@ hold = "C"
 [detection]
 stable_frames = 5
 lock_score = 0.72
+# A tracked board can have weaker contrast during line-clear animations.
+retain_score = 0.55
+# Do not lose the board on a few low-confidence frames; never send input
+# while the board is temporarily unverified.
+loss_grace_frames = 12
 min_cell = 6
 max_cell = 100
 edge_threshold = 8
