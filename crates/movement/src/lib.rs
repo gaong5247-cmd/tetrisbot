@@ -92,7 +92,7 @@ pub fn should_verify_after_action(
     if spin != Spin::None { return true }
     if !matches!(action, Action::Left | Action::Right) { return true }
     let next = actions.get(index + 1).copied();
-    if next == Some(Action::HardDrop) {
+    if next == Some(Action::HardDrop) && horizontal_stride > 1 {
         return false; // The immediate pre-drop checkpoint covers this action.
     }
     if next != Some(action) { return true }
