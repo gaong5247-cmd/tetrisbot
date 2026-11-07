@@ -176,6 +176,36 @@ fn dimmed_ghost_cells(raw: &[[bool;10];20], colors:&[[u8;3]], bg:[u8;3],
     strongest.map(|(_,loc,cells)|(loc,cells))
 }
 
+/// An independent frame-to-frame consensus gate for issuing a new turn.
+/// A single screenshot (often a line-clear flash or incoming garbage frame)
+/// is not enough to authorize input, even if one-frame confidence is high.
+/// Each call must correspond to a newly captured frame, not a GUI repaint.
+#[derive(Default)]
+pub struct StableBoardGate {
+    last: Option<(Board, Piece)>,
+    consecutive: u8,
+}
+impl StableBoardGate {
+    pub fn reset(&mut self) { self.last=None; self.consecutive=0; }
+    pub fn count(&self)->u8 {self.consecutive}
+    pub fn confirmed(&self)->bool {self.consecutive>=2}
+    pub fn observe(&mut self, o:&Observation, fresh_game:bool)->bool {
+        let Ok(planning)=PlanningSnapshot::from_observation(o,fresh_game) else {
+            self.reset();
+            return false;
+        };
+        let snapshot=planning.snapshot;
+        let key=(snapshot.board,snapshot.active.piece);
+        if self.last==Some(key) {
+            self.consecutive=self.consecutive.saturating_add(1);
+        } else {
+            self.last=Some(key);
+            self.consecutive=1;
+        }
+        self.confirmed()
+    }
+}
+
 impl Vision {
     /// Carry trusted temporal evidence across the vision/engine worker boundary.
     /// This is an observed state, not an inferred spawn position.
