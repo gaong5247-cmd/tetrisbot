@@ -350,3 +350,39 @@ fn rising_multiplayer_garbage_does_not_change_playfield_background() {
     let first_board=Board::from_visible(&first.cells,true).unwrap();
     assert_eq!(first_board,board);
 }
+
+
+#[test]
+fn almost_topped_out_19_garbage_rows_keep_real_holes_and_active_i() {
+    use capture::{Frame,Rect};
+    use detection::Grid;
+    let grid=Grid{x:70.,y:36.,cw:24.,ch:24.,score:1.,shape_evidence:true};
+    let mut frame=Frame::new(Rect{x:0,y:0,width:380,height:570},[0,0,0,255]);
+    for y in 0..19i32 {
+        for x in 0..10i32 {
+            if x==4 {continue}
+            frame.fill(Rect{
+                x:grid.x as i32+x*24,
+                y:grid.y as i32+(19-y)*24,
+                width:24,height:24
+            },[120,120,120,255]);
+        }
+    }
+    // The I block is touching the top of the 19-row garbage stack; the
+    // previous binary blob classifier merged active+garbage and lost it.
+    let active=Location{piece:Piece::I,rotation:Rotation::North,x:4,y:19};
+    for (x,y) in active.cells() {
+        frame.fill(Rect {
+            x:grid.x as i32+x as i32*24,
+            y:grid.y as i32+(19-y as i32)*24,
+            width:24,height:24
+        },[15,155,215,255]);
+    }
+    let o=vision::Vision::default().observe(&frame,grid);
+    assert_eq!(o.active.unwrap().piece,Piece::I);
+    assert!(o.active.unwrap().same_cells(active));
+    let b=Board::from_visible(&o.cells,true).unwrap();
+    assert!(b.rows[19..].iter().all(|&row|row==0));
+    for y in 0..19 {assert_eq!(b.rows[y],1023^(1<<4));}
+    assert!(o.confidence>=0.9);
+}
