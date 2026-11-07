@@ -1,5 +1,5 @@
 //! Palette-free cell features, exact geometry and conservative temporal classification.
-use capture::{Frame, Rect};
+use capture::Frame;
 use detection::{Grid, contrast};
 use game_state::*;
 #[derive(Default)]
@@ -270,9 +270,7 @@ impl Vision {
                 }
             }
         }
-        let hud = detect_hud(f, g);
-        o.next = hud.next;
-        o.hold = hud.hold;
+        // Board ROI only: do not scan or classify NEXT/HOLD panels.
         o.confidence = o
             .cells
             .iter()
@@ -281,13 +279,6 @@ impl Vision {
             .fold(1., f32::min);
         if o.active.is_none() {
             o.confidence = o.confidence.min(0.4);
-        }
-        if o.next.len() < 3 {
-            o.reasons.push("NEXT preview limited: using current-piece-only search if state is otherwise verified".into());
-        }
-        if o.hold == Known::Unknown {
-            o.reasons
-                .push("HOLD not observed: current-piece-only mode disables HOLD input".into());
         }
         self.previous_raw = Some(raw);
         self.previous = Some(o.clone());
@@ -329,163 +320,4 @@ pub fn components(mask: &[[bool; 10]; 20]) -> Vec<Vec<(i8, i8)>> {
         }
     }
     out
-}
-#[derive(Debug, Clone)]
-pub struct Hud {
-    pub next: Vec<Piece>,
-    pub hold: Known<Option<Piece>>,
-    pub silhouettes: Vec<(Rect, Piece)>,
-}
-/// Discover isolated filled silhouettes in surrounding HUD, at independent scales.
-/// Queue order is accepted only for at least three vertically aligned shapes.
-pub fn detect_hud(f: &Frame, g: Grid) -> Hud {
-    let mut shapes = vec![];
-    for right in [false, true] {
-        let area = Rect {
-            x: if right {
-                (g.x + 10. * g.cw + g.cw * 0.4) as i32
-            } else {
-                (g.x - 6. * g.cw) as i32
-            },
-            y: g.y as i32,
-            width: (5. * g.cw) as u32,
-            height: (15. * g.ch) as u32,
-        };
-        let Some(area) = area.intersection(f.rect) else {
-            continue;
-        };
-        let step = (g.cw / 10.).max(1.).round() as i32;
-        let w = (area.width as i32 / step) as usize;
-        let h = (area.height as i32 / step) as usize;
-        if w == 0 || h == 0 {
-            continue;
-        }
-        let pixels: Vec<_> = (0..w * h)
-            .map(|i| {
-                f.pixel(
-                    area.x + (i % w) as i32 * step,
-                    area.y + (i / w) as i32 * step,
-                )
-            })
-            .collect();
-        let bg = median_color(&pixels);
-        let mut mask: Vec<_> = pixels.iter().map(|&p| contrast(p, bg) > 25.).collect();
-        for start in 0..mask.len() {
-            if !mask[start] {
-                continue;
-            }
-            let mut q = vec![start];
-            mask[start] = false;
-            let mut k = 0;
-            while k < q.len() {
-                let i = q[k];
-                k += 1;
-                for j in [
-                    if i % w > 0 { Some(i - 1) } else { None },
-                    if i % w + 1 < w { Some(i + 1) } else { None },
-                    i.checked_sub(w),
-                    if i + w < mask.len() {
-                        Some(i + w)
-                    } else {
-                        None
-                    },
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    if mask[j] {
-                        mask[j] = false;
-                        q.push(j);
-                    }
-                }
-            }
-            if q.len() < 12 {
-                continue;
-            }
-            let minx = q.iter().map(|i| i % w).min().unwrap();
-            let maxx = q.iter().map(|i| i % w).max().unwrap();
-            let miny = q.iter().map(|i| i / w).min().unwrap();
-            let maxy = q.iter().map(|i| i / w).max().unwrap();
-            let rw = (maxx - minx + 1) as f32;
-            let rh = (maxy - miny + 1) as f32;
-            let mut found = Vec::new();
-            for p in PIECES {
-                for rot in ROTATIONS {
-                    let cs = p.cells().map(|c| rot.transform(c));
-                    let lx = cs.iter().map(|c| c.0).min().unwrap();
-                    let ly = cs.iter().map(|c| c.1).min().unwrap();
-                    let bw = cs.iter().map(|c| c.0).max().unwrap() - lx + 1;
-                    let bh = cs.iter().map(|c| c.1).max().unwrap() - ly + 1;
-                    let sx = rw / bw as f32;
-                    let sy = rh / bh as f32;
-                    if (sx / sy - 1.).abs() > 0.22
-                        || sx * (step as f32) < g.cw * 0.3
-                        || sx * (step as f32) > g.cw * 1.3
-                    {
-                        continue;
-                    }
-                    let mut expected = 0;
-                    let mut mismatches = 0;
-                    for yy in 0..bh {
-                        for xx in 0..bw {
-                            let px = minx + ((xx as f32 + 0.5) * sx) as usize;
-                            let py = miny + ((bh as f32 - yy as f32 - 0.5) * sy) as usize;
-                            let occupied =
-                                contrast(pixels[py.min(h - 1) * w + px.min(w - 1)], bg) > 25.;
-                            let want = cs.contains(&(xx + lx, yy + ly));
-                            if want {
-                                expected += 1;
-                            }
-                            if occupied != want {
-                                mismatches += 1;
-                            }
-                        }
-                    }
-                    let fill = q.len() as f32 / (sx * sy * 4.);
-                    if mismatches == 0 && expected == 4 && (0.65..1.15).contains(&fill) {
-                        found.push(p);
-                    }
-                }
-            }
-            found.sort_by_key(|p| *p as usize);
-            found.dedup();
-            if found.len() == 1 {
-                shapes.push((
-                    Rect {
-                        x: area.x + minx as i32 * step,
-                        y: area.y + miny as i32 * step,
-                        width: (rw * step as f32) as u32,
-                        height: (rh * step as f32) as u32,
-                    },
-                    found[0],
-                    right,
-                ));
-            }
-        }
-    }
-    let mut right: Vec<_> = shapes.iter().filter(|s| s.2).collect();
-    right.sort_by_key(|s| s.0.y);
-    let aligned = right.len() >= 3
-        && right
-            .iter()
-            .all(|s| (s.0.x - right[0].0.x).abs() < (g.cw * 2.) as i32)
-        && right
-            .windows(2)
-            .all(|w| w[1].0.y > w[0].0.y + (g.ch * 1.5) as i32);
-    let next = if aligned {
-        right.iter().map(|s| s.1).collect()
-    } else {
-        vec![]
-    };
-    let left: Vec<_> = shapes.iter().filter(|s| !s.2).collect();
-    let hold = if left.len() == 1 {
-        Known::Value(Some(left[0].1))
-    } else {
-        Known::Unknown
-    };
-    Hud {
-        next,
-        hold,
-        silhouettes: shapes.into_iter().map(|(r, p, _)| (r, p)).collect(),
-    }
 }

@@ -14,7 +14,6 @@ cw = "X"
 ccw = "Z"
 down = "Down"
 hard_drop = "Space"
-hold = "C"
 
 [detection]
 stable_frames = 5

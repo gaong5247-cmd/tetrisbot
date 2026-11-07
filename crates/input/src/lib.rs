@@ -81,6 +81,8 @@ pub struct KeyBindings {
     pub ccw: String,
     pub down: String,
     pub hard_drop: String,
+    /// Legacy configs may contain this, but HOLD is never serialized or used.
+    #[serde(skip_serializing)]
     pub hold: String,
 }
 impl Default for KeyBindings {
@@ -160,7 +162,7 @@ impl KeyBindings {
     pub fn validate(&self) -> Result<()> {
         let mut used = HashSet::new();
         for a in [Action::Left, Action::Right, Action::Cw, Action::Ccw,
-                  Action::Down, Action::HardDrop, Action::Hold] {
+                  Action::Down, Action::HardDrop] {
             let vk = self.key(a)?;
             if vk == 0x79 { bail!("F10 is reserved for emergency stop"); }
             if !used.insert(vk) { bail!("duplicate control binding: {}", self.name(a)); }
@@ -250,7 +252,7 @@ impl Keyboard {
             pressed: vec![], cancel, target,
             key_codes: [
                 key(Action::Left), key(Action::Right), key(Action::Cw),
-                key(Action::Ccw), key(Action::Down), key(Action::HardDrop), key(Action::Hold)
+                key(Action::Ccw), key(Action::Down), key(Action::HardDrop), 0
             ],
         }
     }
@@ -259,7 +261,7 @@ impl Keyboard {
         let mut key_codes = [0u16; 7];
         for (idx, action) in [
             Action::Left, Action::Right, Action::Cw, Action::Ccw,
-            Action::Down, Action::HardDrop, Action::Hold,
+            Action::Down, Action::HardDrop,
         ].into_iter().enumerate() {
             key_codes[idx] = bindings.key(action)?;
         }
@@ -291,6 +293,11 @@ impl Keyboard {
         Ok(())
     }
     pub fn pulse(&mut self, a: Action, p: &MovementProfile) -> Result<()> {
+        // This bot deliberately never acts on an actual HOLD slot.
+        // Fail before checking foreground or calling SendInput.
+        if a == Action::Hold {
+            bail!("HOLD input is disabled in current-piece-only mode");
+        }
         self.check()?;
         // Virtual keys were validated and resolved when the worker started.
         // Avoid allocating/parsing Strings on the hot input path.
