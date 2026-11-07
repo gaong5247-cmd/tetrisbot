@@ -107,7 +107,7 @@ fn dimmer_same_hue(bright: [f32;3], dim: [f32;3], bg: [u8;3]) -> bool {
 /// piece. Real locked pieces (including garbage) are never cleared merely
 /// for being dark or sharing the active piece's color.
 fn dimmed_ghost_cells(raw: &[[bool;10];20], colors:&[[u8;3]], bg:[u8;3],
-    previous:Option<&Observation>) -> Vec<(i8,i8)>
+    previous:Option<&Observation>) -> Option<(Location,Vec<(i8,i8)>)>
 {
     let groups=color_components(raw,colors,bg);
     let shapes: Vec<_>=groups.iter().filter_map(|cells| {
@@ -115,7 +115,7 @@ fn dimmed_ghost_cells(raw: &[[bool;10];20], colors:&[[u8;3]], bg:[u8;3],
         let shape=match_shape(cells).into_iter().next()?;
         Some((cells,shape,mean_group_color(cells,colors)))
     }).collect();
-    let mut strongest=None;
+    let mut strongest:Option<(f32,Location,Vec<(i8,i8)>)>=None;
     for (a,aloc,acol) in &shapes {
         for (b,bloc,bcol) in &shapes {
             if std::ptr::eq(*a,*b) || aloc.piece!=bloc.piece {continue}
@@ -135,12 +135,12 @@ fn dimmed_ghost_cells(raw: &[[bool;10];20], colors:&[[u8;3]], bg:[u8;3],
             if board.collides(*aloc) || !board.dropped(*aloc).same_cells(*bloc) {continue}
             let weight=acol.iter().zip(bg.iter())
                 .map(|(v,c)|(v-*c as f32).abs()).sum::<f32>();
-            if strongest.as_ref().is_none_or(|(old,_) : &(f32,Vec<(i8,i8)>)|weight>*old) {
-                strongest=Some((weight,(*b).clone()));
+            if strongest.as_ref().is_none_or(|(old,_,_)|weight>*old) {
+                strongest=Some((weight,*aloc,(*b).clone()));
             }
         }
     }
-    strongest.map_or_else(Vec::new,|(_,cells)|cells)
+    strongest.map(|(_,loc,cells)|(loc,cells))
 }
 
 impl Vision {
@@ -245,10 +245,13 @@ impl Vision {
         // Find solid translucent ghost blocks BEFORE connected-components
         // matching, otherwise they join the bright active piece into 8 cells.
         let dimmed=dimmed_ghost_cells(&raw,&centers,bg,self.previous.as_ref());
-        for (x,y) in dimmed {
-            let (x,y)=(x as usize,(19-y) as usize);
-            raw[y][x]=false;
-            o.cells[y][x]=Cell {kind:CellKind::Ghost,confidence:0.94};
+        let dimmed_active=dimmed.as_ref().map(|(loc,_)|*loc);
+        if let Some((_,cells))=dimmed {
+            for (x,y) in cells {
+                let (x,y)=(x as usize,(19-y) as usize);
+                raw[y][x]=false;
+                o.cells[y][x]=Cell {kind:CellKind::Ghost,confidence:0.94};
+            }
         }
         let components = components(&raw);
         // On tall garbage stacks the falling piece can be in direct contact
@@ -300,9 +303,87 @@ impl Vision {
                     })
                     .map(|n| (delta, n))
             });
-        let chosen = hypotheses
+        let chosen = dimmed_active
+            .and_then(|loc| hypotheses.iter()
+                .find(|(_,p)|p.same_cells(loc)).cloned())
+            .or_else(|| hypotheses
             .iter()
             .filter(|(c, p)| p.y >= 12 && c.iter().any(|&(x, y)| moving.contains(&(x, y))))
+            .max_by_key(|(_, p)| p.y)
+            .cloned())
+            .or(touching)
+            .or_else(|| {
+                self.previous
+                    .as_ref()
+                    .and_then(|p| p.active)
+                    .and_then(|prev| {
+                        hypotheses
+                            .iter()
+                            .filter(|(_, p)| {
+                                p.piece == prev.piece
+                                    && (p.x - prev.x).abs() + (p.y - prev.y).abs() <= 4
+                            })
+                            .min_by_key(|(_, p)| (p.x - prev.x).abs() + (p.y - prev.y).abs())
+                            .cloned()
+                    })
+            })
+            .or_else(|| {
+                hypotheses
+                    .iter()
+                    .filter(|(c, _)| c.iter().any(|&(x, y)| moving.contains(&(x, y))))
+                    .max_by_key(|(_, p)| p.y)
+                    .cloned()
+            })
+            .or_else(|| {
+                let upper: Vec<_> = hypotheses
+                    .iter()
+                    .filter(|(_, p)| p.y >= 12)
+                    .cloned()
+                    .collect();
+                if upper.len() == 1 {
+                    Some(upper[0].clone())
+                } else {
+                    None
+                }
+            });
+        /*
+            .max_by_key(|(_, p)| p.y)
+            .cloned()
+            .or(touching)
+            .or_else(|| {
+                self.previous
+                    .as_ref()
+                    .and_then(|p| p.active)
+                    .and_then(|prev| {
+                        hypotheses
+                            .iter()
+                            .filter(|(_, p)| {
+                                p.piece == prev.piece
+                                    && (p.x - prev.x).abs() + (p.y - prev.y).abs() <= 4
+                            })
+                            .min_by_key(|(_, p)| (p.x - prev.x).abs() + (p.y - prev.y).abs())
+                            .cloned()
+                    })
+            })
+            .or_else(|| {
+                hypotheses
+                    .iter()
+                    .filter(|(c, _)| c.iter().any(|&(x, y)| moving.contains(&(x, y))))
+                    .max_by_key(|(_, p)| p.y)
+                    .cloned()
+            })
+            .or_else(|| {
+                let upper: Vec<_> = hypotheses
+                    .iter()
+                    .filter(|(_, p)| p.y >= 12)
+                    .cloned()
+                    .collect();
+                if upper.len() == 1 {
+                    Some(upper[0].clone())
+                } else {
+                    None
+                }
+            }); */
             .max_by_key(|(_, p)| p.y)
             .cloned()
             .or(touching)
