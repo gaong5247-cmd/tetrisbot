@@ -21,6 +21,7 @@ pub struct Config {
     pub engine_timeout_ms: u64,
     pub verification_timeout_ms: u64,
     pub allow_external: bool,
+    pub controls: input::KeyBindings,
     pub detection: DetectionConfig,
     pub movement: MovementProfile,
 }
@@ -32,7 +33,8 @@ impl Default for Config {
             engine_path: PathBuf::from("engines/cold-clear-2.exe"),
             engine_timeout_ms: 3000,
             verification_timeout_ms: 1500,
-            allow_external: false,
+            allow_external: true,
+            controls: input::KeyBindings::default(),
             detection: DetectionConfig::default(),
             movement: MovementProfile::default(),
         }
@@ -44,6 +46,7 @@ impl Config {
             &std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?,
         )?;
         c.movement.validate()?;
+        c.controls.validate()?;
         if c.detection.stable_frames < 2
             || !(0.65..=1.).contains(&c.detection.lock_score)
             || c.engine_timeout_ms > 10000
