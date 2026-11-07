@@ -49,6 +49,8 @@ impl Config {
         c.controls.validate()?;
         if c.detection.stable_frames < 2
             || !(0.65..=1.).contains(&c.detection.lock_score)
+            || !(0.3..=c.detection.lock_score).contains(&c.detection.retain_score)
+            || c.detection.loss_grace_frames > 90
             || c.engine_timeout_ms > 10000
             || c.engine_timeout_ms == 0
             || c.verification_timeout_ms > 10000
