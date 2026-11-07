@@ -36,6 +36,7 @@ pub enum Event {
         observation: Observation,
         input_ms: f64,
         verify_ms: f64,
+        garbage_lines: u8,
     },
     Failed(String),
 }
@@ -62,6 +63,33 @@ pub fn same_reversible_state(before: &Snapshot, after: &Snapshot) -> bool {
         && before.queue() == after.queue()
         && before.hold == after.hold
 }
+/// Recognize a standard bottom-injected garbage attack without inventing
+/// empty cells. All the old occupied rows must have shifted upward by the
+/// SAME number of rows, and the new bottom rows must be nearly full, each
+/// with a visible hole. No clipped blocks may disappear into hidden rows.
+pub fn garbage_rise_lines(before: &Board, after: &Board) -> Option<u8> {
+    if before.rows[20..].iter().any(|&r|r!=0) || after.rows[20..].iter().any(|&r|r!=0) {
+        return None
+    }
+    for count in 1..=12usize {
+        if before.rows[(20-count)..20].iter().any(|&r|r!=0) {continue}
+        let top_matches=(0..(20-count)).all(|y|after.rows[y+count]==before.rows[y]);
+        let injected=(0..count).all(|y| {
+            let filled=after.rows[y].count_ones();
+            (8..=9).contains(&filled) // at least one actual visible hole
+        });
+        if top_matches && injected {return Some(count as u8)}
+    }
+    None
+}
+pub fn compatible_multiplayer_recovery(
+    before:&Snapshot, after:&Snapshot, allow_garbage:bool
+) -> bool {
+    before.active.piece==after.active.piece
+        && (same_reversible_state(before,after)
+            || (allow_garbage && garbage_rise_lines(&before.board,&after.board).is_some()))
+}
+
 /// Accept any foreground Tetris game when the external-games option is enabled.
 /// Keep the debugger itself excluded so a board screenshot in the GUI can never
 /// receive input by mistake. All other vision, focus, and path checks still apply.
