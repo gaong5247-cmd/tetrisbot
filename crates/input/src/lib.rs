@@ -81,6 +81,8 @@ pub struct KeyBindings {
     pub ccw: String,
     pub down: String,
     pub hard_drop: String,
+    /// Legacy configs may contain this, but HOLD is never serialized or used.
+    #[serde(skip_serializing)]
     pub hold: String,
 }
 impl Default for KeyBindings {
