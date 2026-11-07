@@ -386,3 +386,113 @@ fn almost_topped_out_19_garbage_rows_keep_real_holes_and_active_i() {
     for y in 0..19 {assert_eq!(b.rows[y],1023^(1<<4));}
     assert!(o.confidence>=0.9);
 }
+
+
+#[test]
+fn stable_board_gate_requires_distinct_observations_and_resets_on_change() {
+    let mut gate=vision::StableBoardGate::default();
+    let empty=Cell { kind:CellKind::Empty,confidence:1.0 };
+    let mut o=Observation {
+        cells:[[empty;10];20],active:Some(Location::spawn(Piece::T)),
+        confidence:0.99,..Default::default()
+    };
+    assert!(!gate.observe(&o,true));
+    assert_eq!(gate.count(),1);
+    assert!(gate.observe(&o,true));
+    assert!(gate.confirmed());
+    o.cells[19][4].kind=CellKind::Locked;
+    assert!(!gate.observe(&o,true));
+    assert_eq!(gate.count(),1);
+    o.cells[19][4].kind=CellKind::Uncertain;
+    assert!(!gate.observe(&o,true));
+    assert_eq!(gate.count(),0);
+    o.cells[19][4]=empty;
+    o.active=Some(Location::spawn(Piece::I));
+    assert!(!gate.observe(&o,true));
+    assert!(gate.observe(&o,true));
+    gate.reset();
+    assert!(!gate.confirmed());
+}
+
+#[test]
+fn initial_dense_garbage_background_uses_real_hole_not_gray_majority() {
+    use capture::{Frame,Rect};
+    use detection::Grid;
+    let grid=Grid{x:50.,y:35.,cw:24.,ch:24.,score:1.,shape_evidence:true};
+    let mut f=Frame::new(Rect{x:0,y:0,width:340,height:560},[7,9,13,255]);
+    // All 20 rows nearly full: the top-row and full-board medians are
+    // garbage gray, but 20 real black hole cells remain in column 4.
+    for y in 0..20i32 {
+        for x in 0..10i32 {
+            if x==4 {continue}
+            f.fill(Rect {
+                x:grid.x as i32+x*24+2,
+                y:grid.y as i32+y*24+2,
+                width:20,height:20
+            },[117,117,117,255]);
+        }
+    }
+    let o=vision::Vision::default().observe(&f,grid);
+    for y in 0..20 {
+        assert_eq!(o.cells[y][4].kind,CellKind::Empty,"real hole row {y}");
+        for x in 0..10 {
+            if x!=4 {assert_eq!(o.cells[y][x].kind,CellKind::Locked,
+                "filled garbage row {y} col {x}");}
+        }
+    }
+    assert_eq!(o.active,None,"a packed, top-out-like board has no invented active piece");
+}
+
+#[test]
+fn faint_solid_same_hue_ghost_is_separated_from_real_locked_terrain() {
+    use capture::{Frame,Rect};
+    use detection::Grid;
+    let grid=Grid{x:60.,y:35.,cw:24.,ch:24.,score:1.,shape_evidence:true};
+    let mut f=Frame::new(Rect{x:0,y:0,width:360,height:550},[7,9,13,255]);
+    let mut paint=|x:i8,y:i8,col:[u8;4]| {
+        f.fill(Rect{
+            x:grid.x as i32+x as i32*24+1,
+            y:grid.y as i32+(19-y as i32)*24+1,
+            width:22,height:22
+        },col);
+    };
+    let active=Location {piece:Piece::T,rotation:Rotation::North,x:5,y:12};
+    let landing=Board::default().dropped(active);
+    for (x,y) in landing.cells() {
+        paint(x,y,[27,12,23,255]); // too faint for solid-cell threshold
+    }
+    for (x,y) in active.cells() {
+        paint(x,y,[183,58,151,255]);
+    }
+    // A genuinely locked blue block outside the landing survives.
+    paint(1,0,[36,96,182,255]);
+    let o=vision::Vision::default().observe(&f,grid);
+    assert_eq!(o.active.unwrap().piece,Piece::T);
+    assert_eq!(o.active.unwrap().cells(),active.cells());
+    let ghost=o.cells.iter().flatten().filter(|c|c.kind==CellKind::Ghost).count();
+    assert_eq!(ghost,4);
+    let board=Board::from_visible(&o.cells,true).unwrap();
+    assert_eq!(board.rows[0],1<<1);
+    assert!(board.rows[1..].iter().all(|&r|r==0));
+}
+
+#[test]
+fn majority_cell_votes_ignore_two_highlight_pixels() {
+    use capture::{Frame,Rect};
+    use detection::Grid;
+    let grid=Grid{x:60.,y:40.,cw:24.,ch:24.,score:1.,shape_evidence:true};
+    let mut f=Frame::new(Rect{x:0,y:0,width:360,height:550},[7,9,13,255]);
+    let cx=(grid.x+4.5*grid.cw).round() as i32;
+    let cy=(grid.y+19.5*grid.ch).round() as i32;
+    f.fill(Rect{x:cx-10,y:cy-10,width:20,height:20},[120,141,176,255]);
+    // Exactly two of the nine interior sample positions are overpainted.
+    for (dx,dy) in [(-0.18,-0.18),(0.18,0.18)] {
+        f.fill(Rect{
+            x:(cx as f32+dx*24.).round() as i32,
+            y:(cy as f32+dy*24.).round() as i32,
+            width:1,height:1
+        },[7,9,13,255]);
+    }
+    let o=vision::Vision::default().observe(&f,grid);
+    assert_eq!(o.cells[19][4].kind,CellKind::Locked);
+}
