@@ -16,7 +16,7 @@ fn lower_active_evidence_survives_worker_handoff() {
     lab.active.y -= 1;
     let fresh = worker.observe(&lab.frame(1280, 720, (300, 90), 24, 0, true), grid);
     assert_eq!(fresh.active.unwrap().piece, lab.active.piece);
-    assert!(Snapshot::from_observation(&fresh, true).is_ok());
+    assert!(PlanningSnapshot::from_observation(&fresh, true).is_ok());
 }
 #[test]
 fn all_shapes_all_rotations() {
@@ -40,15 +40,17 @@ fn obscured_and_invalid_silhouettes() {
     assert!(match_shape(&[(0, 0), (0, 0), (1, 0), (2, 0)]).is_empty());
 }
 #[test]
-fn palette_independent_occupancy_and_hud() {
+fn palette_independent_occupancy_ignores_next_and_hold() {
     for skin in 0..=1 {
         let (f, g) = fixture(1280, 720, (300, 90), 24, skin, true);
         let mut vision = vision::Vision::default();
         let o = vision.observe(&f, g);
         eprintln!("{o:?}");
         assert_eq!(o.active.unwrap().piece, Piece::T);
-        assert_eq!(o.hold, Known::Value(Some(Piece::I)));
-        assert_eq!(o.next.len(), 5);
+        // Local Lab visually renders HOLD and five NEXT pieces; the vision
+        // engine must ignore them entirely and never classify their HUD.
+        assert_eq!(o.hold, Known::Unknown);
+        assert!(o.next.is_empty());
         assert_eq!(
             o.cells
                 .iter()
@@ -218,4 +220,27 @@ fn actual_solid_locked_blocks_remain_occupied_next_to_ghost() {
     assert_eq!(Board::from_visible(&observed.cells, true).unwrap(), lab.board);
     assert_eq!(observed.cells[19][0].kind, CellKind::Locked);
     assert_eq!(observed.cells[19][1].kind, CellKind::Locked);
+}
+
+#[test]
+fn hud_pixels_do_not_affect_current_piece_or_locked_board() {
+    use capture::Rect;
+    let (mut frame, grid) = fixture(1280, 720, (300, 90), 24, 0, true);
+    let mut tracker = vision::Vision::default();
+    let original = tracker.observe(&frame, grid);
+    let b = Board::from_visible(&original.cells, true).unwrap();
+
+    // Paint the side HUD aggressively; board-only vision must remain identical.
+    for box_at in [
+        Rect { x: 165, y: 98, width: 120, height: 380 },
+        Rect { x: 560, y: 92, width: 180, height: 500 },
+    ] {
+        frame.fill(box_at, [210, 208, 206, 255]);
+    }
+    let changed = tracker.observe(&frame, grid);
+    assert_eq!(changed.active.unwrap().piece, original.active.unwrap().piece);
+    assert_eq!(Board::from_visible(&changed.cells, true).unwrap(), b);
+    assert!(changed.next.is_empty());
+    assert_eq!(changed.hold, Known::Unknown);
+    assert!(PlanningSnapshot::from_observation(&changed, true).unwrap().restricted_no_hold);
 }
