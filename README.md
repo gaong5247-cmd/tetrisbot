@@ -16,6 +16,7 @@ PNG 템플릿이나 테트로미노별 고정 RGB 색상표 없이, 화면의 �
 - **T스핀 경로 복구:** 잠깐 인식이 불명확한 프레임을 재확인하고, 입력 후 화면 캡처·검증에 걸리는 시간(`feedback_ms`)도 중력·잠금 시간 예산에 반영합니다. 하드드롭 **이전**에만 보드·큐·HOLD 동일성을 검증해 최대 3회 안전하게 자동 재계획합니다. 하드드롭이 전송되었거나 실제 상태가 달라졌다면 멈춥니다.
 - **egui 디버거:** 원본/흑백/에지/격자 후보/복원 보드와 입력·엔진 상태를 표시합니다.
 - **Always on Top:** 디버거 창이 기본적으로 항상 위에 표시됩니다. GUI의 **Always on Top** 체크박스로 즉시 끌 수 있습니다.
+- **External Tetris Game Support:** 기본적으로 외부 게임 창 입력을 허용합니다. egui에서 **Allow external Tetris games**, **Game Keyboard Bindings** 및 **Apply Game Profile**을 지원합니다.
 
 ## 다운로드 후 실행
 
@@ -35,6 +36,38 @@ Windows x64 환경에서 저장소를 내려받은 뒤 루트 폴더에서 다�
 
 > GitHub의 `SilhouetteTetris.exe`는 커밋 시점의 바이너리입니다. 소스 변경 사항은 새 바이너리를 빌드해야 적용됩니다. 이 README의 새 복구·Always on Top 수정은 제공된 기존 EXE에 자동 반영되지 않습니다.
 
+## 외부 테트리스 게임 연결 (예: Cold Clear)
+
+기존 `default compatibility profile permits only Local Lab; target is "Cold Clear (FPS: 59)"` 오류의 원인이었던 외부 창 차단은 기본 설정에서 해제했습니다. **이제 Local Lab이라는 창 제목을 강제하지 않습니다.**
+
+1. 게임을 실행한 뒤 게임의 키 설정에서 왼쪽/오른쪽/양방향 회전/소프트드롭/하드드롭/홀드 키를 확인합니다.
+2. `Start egui.cmd`를 열고 **Allow external Tetris games** 체크 여부를 확인합니다(기본 ON).
+3. **Game Keyboard Bindings**를 펼쳐 게임에서 실제 사용하는 키와 일치시키고 **Apply Game Profile**을 클릭합니다. 적용하면 입력 워커가 재시작되며 안전하게 AI가 꺼지고 기준 상태 확인이 초기화됩니다.
+4. **Auto Detect Board**로 판을 자동 인식시키고, **Reconstruction**에서 잠긴 셀/액티브/고스트/NEXT/HOLD가 실제 화면과 일치하는지 확인합니다.
+5. 게임을 새로 시작했다면 **Confirmed fresh guideline game**을 체크하고, 실제 HOLD가 비어 있을 때에만 **HOLD known empty**를 체크합니다.
+6. **Start AI**를 누른 후 게임 창을 클릭해 활성화합니다. 디버거는 Always on Top이어도 게임 창을 덮지 않게 배치하세요. 중단하려면 **F10**을 누르세요.
+
+**핵심 차이:** 외부 창 입력 권한은 모든 게임에서 실제로 판을 인식하거나 키를 자동으로 알아낸다는 뜻이 아닙니다. 이 버전의 비전 파이프라인은 여전히 표준 10×20/SRS, 오른쪽 세로 NEXT·왼쪽 HOLD, 확정된 현재 블록과 숨은 행 기준 상태를 요구합니다. 비표준 회전 규칙, 3D UI, 비어 있거나 가려진 HUD 등에서는 안전한 검증 실패가 나올 수 있습니다.
+
+### 키 설정 파일
+
+기본값은 `config/default.toml`에 있습니다:
+
+```toml
+allow_external = true
+
+[controls]
+left = "Left"
+right = "Right"
+cw = "X"
+ccw = "Z"
+down = "Down"
+hard_drop = "Space"
+hold = "C"
+```
+
+`Up`, `LeftShift`, `Ctrl`, `Space`, `A`~`Z`, 숫자, 방향키, 일부 특수 키를 지원합니다. F10은 긴급 정지로 예약되어 있으며 중복 키 매핑은 거부합니다. GUI에서 설정을 저장하면 `config/local.toml`이 생성됩니다. 다음 실행부터 해당 설정을 쓰려면 `SilhouetteTetris.exe --gui --config config/local.toml`을 실행하세요. 설정을 바꾸고 **Apply Game Profile**을 누르기 전에는 Start AI가 비활성입니다.
+
 ## Local Lab에서 자동 플레이하기
 
 1. 두 창을 실행하고 게임 보드가 디버거 창에 가려지지 않도록 배치합니다. Always on Top이 창을 가리면 해제하거나 위치를 옮기세요.
@@ -44,7 +77,7 @@ Windows x64 환경에서 저장소를 내려받은 뒤 루트 폴더에서 다�
 5. **Start AI**를 누른 뒤 **Local Lab 게임 창을 클릭하여 키보드 포커스를 줍니다.** 디버거는 Always on Top이어도 게임에 키 입력 포커스를 강제로 빼앗지 않습니다.
 6. **F10**은 긴급 정지입니다. GUI의 **Pause / Stop / Emergency Stop**도 입력을 멈춥니다.
 
-기본 설정에서는 Local Lab에만 키 입력합니다(`allow_external = false`). 외부 게임을 사용하려면 해당 게임의 입력 규칙·상태 해석을 따로 검증해야 합니다. 이용이 허용된 환경에서만 실행하세요.
+기본 설정에서 외부 테트리스 창 입력은 활성화되어 있으나, 실제 게임의 키 매핑·보드 규칙·HUD 인식은 확인해야 합니다. 이용이 허용된 환경에서만 실행하세요.
 
 ## 조작법과 화면
 
@@ -57,7 +90,7 @@ Windows x64 환경에서 저장소를 내려받은 뒤 루트 폴더에서 다�
 | HOLD | C |
 | 긴급 정지 | F10 |
 
-실제 키 매핑은 현재 Local Lab 기준으로 고정되어 있습니다. 다른 게임과 동일하다고 가정하면 안 됩니다.
+위 키는 기본값입니다. 실제 키 매핑은 GUI의 **Game Keyboard Bindings** 또는 설정 파일에서 바꿀 수 있습니다. 게임의 키가 다르면 반드시 수정하세요.
 
 GUI의 `Original`, `Grayscale`, `Edges`, `Heatmap`, `Occupancy`, `Silhouettes`, `Reconstruction` 보기로 인식 단계별 문제를 확인할 수 있습니다. **Always on Top**은 디버거 창의 순서만 변경하며 게임 창의 입력 포커스를 자동 변경하지 않습니다.
 
@@ -102,7 +135,7 @@ Cold Clear 2 엔진은 `engines/cold-clear-2.exe`에 포함되며 소스는 `thi
 .\SilhouetteTetris.exe --headless --seconds 15
 ```
 
-Local Lab에서만 실제 입력을 활성화하는 테스트:
+포커스가 맞는 게임 창에서만 실제 입력을 활성화하는 headless 테스트(새 게임 상태를 명시적으로 확인한 경우에만):
 
 ```powershell
 .\SilhouetteTetris.exe --headless --allow-input --fresh-game --seconds 20
