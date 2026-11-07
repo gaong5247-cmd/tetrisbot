@@ -18,16 +18,49 @@ fn median_color(v: &[[u8; 3]]) -> [u8; 3] {
         a[a.len() / 2]
     })
 }
-fn sample(f: &Frame, cx: f32, cy: f32, cw: f32, ch: f32) -> ([u8; 3], f32) {
-    let mut v = Vec::with_capacity(9);
+fn sample(f: &Frame, cx: f32, cy: f32, cw: f32, ch: f32) -> ([u8; 3], f32, [[u8;3];9]) {
+    let mut v = [[0u8;3];9];
+    let mut index=0;
     for dy in [-0.18, 0., 0.18] {
         for dx in [-0.18, 0., 0.18] {
-            v.push(f.pixel((cx + dx * cw).round() as i32, (cy + dy * ch).round() as i32));
+            v[index]=f.pixel((cx + dx * cw).round() as i32,
+                             (cy + dy * ch).round() as i32);
+            index+=1;
         }
     }
     let median = median_color(&v);
     let spread = v.iter().map(|&p| contrast(p, median)).sum::<f32>() / 9.;
-    (median, spread)
+    (median, spread, v)
+}
+/// On dense garbage stacks most centers are filled. A repeated dark
+/// cluster can reveal a real visible hole even when the top row is occupied.
+/// A grid-seam cross-check avoids silently erasing arbitrary dark blocks.
+fn repeated_dark_background(f: &Frame, g: Grid, centers: &[[u8;3]], top: [u8;3])
+    -> Option<[u8;3]>
+{
+    let mut ranked = centers.to_vec();
+    ranked.sort_unstable_by_key(|rgb| rgb.iter().map(|v| *v as u16).sum::<u16>());
+    let darkest = median_color(&ranked[..12]);
+    let supporters = centers.iter().filter(|&&rgb| contrast(rgb,darkest)<12.).count();
+    if supporters < 6 {return None}
+    let darkness_top=top.iter().map(|v|*v as i32).sum::<i32>();
+    let darkness_low=darkest.iter().map(|v|*v as i32).sum::<i32>();
+    if darkness_top-darkness_low < 36 {return None}
+    let mut seams = Vec::with_capacity(20);
+    for x in 1..10 {
+        seams.push(f.pixel(
+            (g.x + x as f32*g.cw).round() as i32,
+            (g.y+0.5*g.ch).round() as i32
+        ));
+    }
+    for y in [2,5,8,11,14,17] {
+        seams.push(f.pixel(
+            (g.x+4.*g.cw).round() as i32,
+            (g.y+(y as f32+0.5)*g.ch).round() as i32
+        ));
+    }
+    let seam=median_color(&seams);
+    (contrast(darkest,seam)<70.).then_some(darkest)
 }
 /// Hollow ghost silhouettes often use a nearly background-colored center with
 /// brighter rims. Detect *geometry*, not an RGB/gray palette or PNG template.
@@ -191,9 +224,11 @@ impl Vision {
         } else {
             (top_four_bg,top_four_support)
         };
-        let bg=self.background.unwrap_or(top_bg);
-        if self.background.is_none() && support>=5 {
-            self.background=Some(top_bg);
+        let refined=repeated_dark_background(f,g,&centers,top_bg);
+        let candidate=refined.unwrap_or(top_bg);
+        let bg=self.background.unwrap_or(candidate);
+        if self.background.is_none() && (support>=5 || refined.is_some()) {
+            self.background=Some(candidate);
         }
         let mut o = Observation::default();
         let mut raw = [[false; 10]; 20];
@@ -201,8 +236,12 @@ impl Vision {
         let mut hollow = [[false; 10]; 20];
         for y in 0..20 {
             for x in 0..10 {
-                let (color, spread) = features[y * 10 + x];
+                let (color, spread, pixels) = features[y * 10 + x];
                 let d = contrast(color, bg);
+                // Per-cell voting tolerates one or two highlight or effect
+                // pixels without converting the entire cell into a wall.
+                let solid_votes=pixels.iter().filter(|&&p|contrast(p,bg)>24.).count();
+                let empty_votes=pixels.iter().filter(|&&p|contrast(p,bg)<12.).count();
                 let mut outline = 0;
                 for (dx, dy) in [(0.12, 0.5), (0.88, 0.5), (0.5, 0.12), (0.5, 0.88)] {
                     if contrast(
@@ -221,13 +260,13 @@ impl Vision {
                 hollow[y][x] = hollow_ghost_candidate(f, cx, cy, g.cw, g.ch, bg);
                 // Ghost pixels must not become locked terrain, nor be mistaken
                 // for an active tetromino in connected-component matching.
-                raw[y][x] = d > 24. && spread < 25. && !hollow[y][x];
+                raw[y][x] = d > 24. && solid_votes >= 7 && spread < 35. && !hollow[y][x];
                 outlines[y][x] = d < 12. && outline >= 3;
                 let kind = if hollow[y][x] {
                     CellKind::Uncertain
                 } else if raw[y][x] {
                     CellKind::Locked
-                } else if d < 10. && spread < 4. {
+                } else if d < 12. && empty_votes >= 7 {
                     CellKind::Empty
                 } else {
                     CellKind::Uncertain
