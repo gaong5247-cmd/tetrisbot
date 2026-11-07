@@ -193,8 +193,11 @@ impl Runtime {
                     if let Ok((found, scan_epoch)) = drx.try_recv() {
                         if scan_epoch == epoch {
                             candidates = found;
-                            tracker.update(&candidates);
-                            vision.reset();
+                            let generation = tracker.generation;
+                            tracker.apply_scan(&candidates);
+                            if tracker.generation != generation {
+                                vision.reset();
+                            }
                         }
                     }
                     if tracker.grid.is_some() {
@@ -217,9 +220,10 @@ impl Runtime {
                     }
                     {
                         let mut s = shared.lock().unwrap();
-                        if failures > 2 {
+                        if failures > dcfg.loss_grace_frames && tracker.state != State::Locked {
+                            // Clear ROI only after sustained confirmed loss, not
+                            // merely because a fast game animated two frames.
                             s.roi = None;
-                            tracker.grid = None;
                         } else if tracker.may_input() {
                             if let Ok(m) = capture::monitors() {
                                 if let Some(mon) = m.get(s.monitor) {
@@ -289,12 +293,23 @@ impl Runtime {
     let mut hard_drop_sent=false;
     let outcome=(||->Result<()> {
      if empty_hold&&observation.hold==Known::Unknown {observation.hold=Known::Value(None);}
-     let snapshot=Snapshot::from_observation(&observation,baseline)?;
+     let initial=PlanningSnapshot::from_observation(&observation,baseline)?;
+     let restricted=initial.restricted_no_hold;
+     let snapshot=initial.snapshot;
+     if restricted {
+      let _=etx.send(Event::Status("Cold Clear 2 (restricted: current piece only; HOLD disabled)".into()));
+     }
      if client.is_none(){let c=tbp_client::Client::spawn(&cfg.engine_path,Duration::from_millis(cfg.engine_timeout_ms))?;let _=etx.send(Event::Status(c.info.clone()));client=Some(c);}
      let c=client.as_mut().unwrap();
-     let same=synchronized.as_ref().is_some_and(|s|s.board==snapshot.board&&s.queue()==snapshot.queue()&&s.hold==snapshot.hold);
+     // Restricted mode uses a synthetic reserve and known pieces only.
+     // Always resync it per turn: the game may not show any future pieces.
+     let same=!restricted && synchronized.as_ref().is_some_and(|s|s.board==snapshot.board&&s.queue()==snapshot.queue()&&s.hold==snapshot.hold);
      let mut snapshot=snapshot;
-     if same {if let Some(s)=&synchronized {snapshot.combo=s.combo;snapshot.back_to_back=s.back_to_back;}} else {c.resync(&snapshot)?;}
+     if same {
+      if let Some(s)=&synchronized {snapshot.combo=s.combo;snapshot.back_to_back=s.back_to_back;}
+     } else {
+      c.resync_with_mode(&snapshot,restricted)?;
+     }
      recovery_snapshot=Some(snapshot.clone());
      let start=Instant::now();let moves=c.suggest()?;let elapsed=start.elapsed().as_secs_f64()*1000.;let _=etx.send(Event::Suggestion(moves.clone(),elapsed));
      synchronized=Some(snapshot.clone());if !execute{let _=etx.send(Event::PreviewDone);return Ok(())}
@@ -312,9 +327,18 @@ impl Runtime {
      // Recapture after engine search: active gravity may have advanced since the request.
      let mut vision=vision::Vision::default();vision.seed(&observation);vision.observe(&frame,grid);
      let fresh=Arc::new(capture::capture(frame.rect,frame.sequence+1)?);let mut current=vision.observe(&fresh,grid);if empty_hold&&current.hold==Known::Unknown {current.hold=Known::Value(None);}
-     let current_snapshot=Snapshot::from_observation(&current,baseline)?;
-     if current_snapshot.board!=snapshot.board||current_snapshot.queue()!=snapshot.queue()||current_snapshot.hold!=snapshot.hold {bail!("state changed during engine search")}
-     let chosen=moves.iter().find_map(|&m|plan(&current_snapshot,m,&cfg.movement).ok()).context("no legal reachable recommendation")?;
+     let current_snapshot=PlanningSnapshot::with_mode(&current,baseline,restricted)?.snapshot;
+     if current_snapshot.board!=snapshot.board
+         || current_snapshot.active.piece!=snapshot.active.piece
+         || (restricted && !current_snapshot.queue().starts_with(&snapshot.queue()))
+         || (!restricted && (current_snapshot.queue()!=snapshot.queue()||current_snapshot.hold!=snapshot.hold))
+     {bail!("state changed during engine search")}
+     // Never execute a HOLD recommendation when the actual HOLD is unknown.
+     // The short-queue CC2 search uses a simulated current-piece reserve.
+     let chosen=moves.iter()
+        .filter(|m| !restricted || m.location.piece == current_snapshot.active.piece)
+        .find_map(|&m| plan(&current_snapshot,m,&cfg.movement).ok())
+        .context("no safe reachable current-piece recommendation from Cold Clear 2")?;
      phase="execute path";actions=chosen.actions.clone();placement=Some(chosen.placement);
      let mut trusted=current.clone();
      let start=Instant::now();
@@ -363,19 +387,39 @@ impl Runtime {
       if snapshot.hold.is_none()&&!chosen.uses_hold&&o.hold==Known::Unknown {o.hold=Known::Value(None);}
       let consumed=if snapshot.hold.is_none()&&chosen.uses_hold {2}else{1};
       let expected_hold=if chosen.uses_hold {Some(snapshot.active.piece)}else{snapshot.hold};
-      let expected_active=snapshot.next[consumed-1];
-      let queue_ok=o.active.is_some_and(|a|a.piece==expected_active)&&o.next.len()>=snapshot.next.len()&&o.next.iter().take(snapshot.next.len()-consumed).eq(snapshot.next.iter().skip(consumed))&&o.hold==Known::Value(expected_hold);
+      let queue_ok=if restricted {
+       // Limited visibility: verify the *actual new board* and a visible next
+       // active piece; do not demand unseen NEXT/HOLD data or fabricate it.
+       o.active.is_some()
+          && snapshot.next.first().is_none_or(|p| o.active.is_some_and(|a| a.piece==*p))
+      } else {
+       let expected_active=snapshot.next[consumed-1];
+       o.active.is_some_and(|a|a.piece==expected_active)
+          && o.next.len()>=snapshot.next.len()
+          && o.next.iter().take(snapshot.next.len()-consumed).eq(snapshot.next.iter().skip(consumed))
+          && o.hold==Known::Value(expected_hold)
+      };
       if o.confidence>=0.9&&queue_ok&&Board::from_visible(&o.cells,baseline).is_ok_and(|b|b==chosen.expected) {matches+=1;if matches>=2 {verified=Some(o);break}}else{matches=0;}
       std::thread::sleep(Duration::from_millis(16));
      }
      let observation=verified.context("post-lock board/NEXT/HOLD verification timed out")?;
-     c.play(chosen.placement)?;
-     let consumed=if snapshot.hold.is_none()&&chosen.uses_hold {2}else{1};
-     for &p in observation.next.iter().skip(snapshot.next.len()-consumed) {c.new_piece(p)?;}
-     let mut next=Snapshot::from_observation(&observation,baseline)?;
-     let cleared=(snapshot.board.rows.iter().map(|r|r.count_ones()).sum::<u32>()+4-chosen.expected.rows.iter().map(|r|r.count_ones()).sum::<u32>())/10;
-     next.combo=if cleared>0 {snapshot.combo+1}else{0};next.back_to_back=if cleared>0 {cleared==4||chosen.placement.spin!=Spin::None}else{snapshot.back_to_back};
-     synchronized=Some(next);let _=etx.send(Event::Completed {observation,input_ms,verify_ms:verify_start.elapsed().as_secs_f64()*1000.});Ok(())
+     if restricted {
+      // The reserve was only a search construct, not the game's actual HOLD.
+      // Stop and reinitialize from pixels next turn instead of advancing
+      // this synthetic TBP state into a fabricated queue.
+      let _=c.stop();
+      synchronized=None;
+     } else {
+      c.play(chosen.placement)?;
+      let consumed=if snapshot.hold.is_none()&&chosen.uses_hold {2}else{1};
+      for &p in observation.next.iter().skip(snapshot.next.len()-consumed) {c.new_piece(p)?;}
+      let mut next=Snapshot::from_observation(&observation,baseline)?;
+      let cleared=(snapshot.board.rows.iter().map(|r|r.count_ones()).sum::<u32>()+4-chosen.expected.rows.iter().map(|r|r.count_ones()).sum::<u32>())/10;
+      next.combo=if cleared>0 {snapshot.combo+1}else{0};
+      next.back_to_back=if cleared>0 {cleared==4||chosen.placement.spin!=Spin::None}else{snapshot.back_to_back};
+      synchronized=Some(next);
+     }
+     let _=etx.send(Event::Completed {observation,input_ms,verify_ms:verify_start.elapsed().as_secs_f64()*1000.});Ok(())
     })();
     if let Err(e)=outcome {
      let error=format!("{e:#}");
