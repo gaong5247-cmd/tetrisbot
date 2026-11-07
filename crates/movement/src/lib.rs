@@ -19,6 +19,9 @@ pub enum Action {
 pub struct MovementProfile {
     pub pulse_ms: u32,
     pub gap_ms: u32,
+    /// Estimated screen capture + visual verification time after each key.
+    /// The planner must include this elapsed wall-clock time in gravity/lock budget.
+    pub feedback_ms: u32,
     pub das_ms: u32,
     pub arr_ms: u32,
     pub gravity_ms: u32,
@@ -32,6 +35,7 @@ impl Default for MovementProfile {
         Self {
             pulse_ms: 18,
             gap_ms: 22,
+            feedback_ms: 30,
             das_ms: 150,
             arr_ms: 30,
             gravity_ms: 1000,
@@ -48,8 +52,9 @@ impl MovementProfile {
             || !self.soft_drop_one_cell
             || self.pulse_ms == 0
             || self.pulse_ms >= self.das_ms
-            || self.gravity_ms < self.pulse_ms + self.gap_ms
-            || self.lock_delay_ms < self.pulse_ms + self.gap_ms
+            || self.feedback_ms > 150
+            || self.gravity_ms < self.step_ms()
+            || self.lock_delay_ms < self.step_ms()
             || self.max_nodes == 0
         {
             bail!("unsupported or unsafe movement profile")
@@ -57,7 +62,7 @@ impl MovementProfile {
         Ok(())
     }
     pub fn step_ms(&self) -> u32 {
-        self.pulse_ms + self.gap_ms
+        self.pulse_ms + self.gap_ms + self.feedback_ms
     }
 }
 fn offsets(p: Piece, r: Rotation) -> [(i8, i8); 5] {

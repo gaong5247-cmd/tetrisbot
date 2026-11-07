@@ -28,6 +28,9 @@ pub enum Event {
     Status(String),
     Suggestion(Vec<Placement>, f64),
     PreviewDone,
+    /// A reversible path was interrupted before hard drop. The GUI may
+    /// resume automatically only after re-observing this same board and queue.
+    Recovering { reason: String, snapshot: Snapshot },
     Completed {
         observation: Observation,
         input_ms: f64,
@@ -50,6 +53,14 @@ struct Shared {
     roi: Option<Rect>,
     monitor: usize,
     epoch: u64,
+}
+/// Input can be retried only if no placement has locked and the game's
+/// stack, current piece/queue identity and HOLD are unchanged.
+/// A reversible rotation or movement may change active position.
+pub fn same_reversible_state(before: &Snapshot, after: &Snapshot) -> bool {
+    before.board == after.board
+        && before.queue() == after.queue()
+        && before.hold == after.hold
 }
 pub struct Runtime {
     pub views: Receiver<Result<View>>,
@@ -179,7 +190,11 @@ impl Runtime {
                             failures = 0;
                         } else {
                             failures += 1;
-                            vision.reset();
+                            // Preserve the last trustworthy silhouette during a brief
+                            // detection dropout at T-spin contact. Reset only on real loss.
+                            if tracker.state != State::Locked {
+                                vision.reset();
+                            }
                         }
                     }
                     if !tracker.may_input()
@@ -256,6 +271,10 @@ impl Runtime {
     let mut completed_actions=0usize;
     let mut last_action=None;
     let mut placement=None;
+    let mut recovery_snapshot: Option<Snapshot> = None;
+    // Once the hard-drop key could have been delivered, a failure is no
+    // longer reversible and must never be automatically retried.
+    let mut hard_drop_sent=false;
     let outcome=(||->Result<()> {
      if empty_hold&&observation.hold==Known::Unknown {observation.hold=Known::Value(None);}
      let snapshot=Snapshot::from_observation(&observation,baseline)?;
@@ -264,6 +283,7 @@ impl Runtime {
      let same=synchronized.as_ref().is_some_and(|s|s.board==snapshot.board&&s.queue()==snapshot.queue()&&s.hold==snapshot.hold);
      let mut snapshot=snapshot;
      if same {if let Some(s)=&synchronized {snapshot.combo=s.combo;snapshot.back_to_back=s.back_to_back;}} else {c.resync(&snapshot)?;}
+     recovery_snapshot=Some(snapshot.clone());
      let start=Instant::now();let moves=c.suggest()?;let elapsed=start.elapsed().as_secs_f64()*1000.;let _=etx.send(Event::Suggestion(moves.clone(),elapsed));
      synchronized=Some(snapshot.clone());if !execute{let _=etx.send(Event::PreviewDone);return Ok(())}
      phase="bind target";
@@ -281,6 +301,7 @@ impl Runtime {
      if current_snapshot.board!=snapshot.board||current_snapshot.queue()!=snapshot.queue()||current_snapshot.hold!=snapshot.hold {bail!("state changed during engine search")}
      let chosen=moves.iter().find_map(|&m|plan(&current_snapshot,m,&cfg.movement).ok()).context("no legal reachable recommendation")?;
      phase="execute path";actions=chosen.actions.clone();placement=Some(chosen.placement);
+     let mut trusted=current.clone();
      let start=Instant::now();
      for &a in &chosen.actions {
       last_action=Some(a);
@@ -292,15 +313,31 @@ impl Runtime {
        let b=Board::from_visible(&o.cells,baseline).with_context(||format!("pre-drop uncertain at {:?}; active {:?}",o.cells.iter().enumerate().flat_map(|(y,row)|row.iter().enumerate().filter_map(move |(x,c)|(c.kind==CellKind::Uncertain).then_some((x,y)))).collect::<Vec<_>>(),o.active))?;let active=o.active.context("lost active piece before hard drop")?;
        if o.confidence<0.9||b!=snapshot.board||!b.dropped(active).same_cells(chosen.placement.location) {bail!("pre-drop visual checkpoint disagrees with plan")}
       }
+      if a == Action::HardDrop {hard_drop_sent=true;}
       keyboard.pulse(a,&cfg.movement)?;
       completed_actions+=1;
       if a!=Action::HardDrop {
-       // Preserve temporal evidence throughout the path, including contact
-       // with the stack. Never issue the next key from an unobserved state.
-       let step_frame=capture::capture(frame.rect,frame.sequence+2)?;
-       let step_observation=vision.observe(&step_frame,grid);
-       if step_observation.confidence<0.9||step_observation.active.is_none()||Board::from_visible(&step_observation.cells,baseline)?!=snapshot.board {
-        bail!("lost visual state after {a:?}; input stopped")
+       // A single ghost/stack-contact animation frame is not proof that a
+       // T-spin failed. Reobserve briefly, but do not send the next key until
+       // the active piece and unchanged locked stack are both verified.
+       let deadline=Instant::now()+Duration::from_millis(120);
+       loop {
+        keyboard.check()?;
+        let step_frame=capture::capture(frame.rect,frame.sequence+2)?;
+        let step_observation=vision.observe(&step_frame,grid);
+        let verified=step_observation.confidence>=0.9
+            && step_observation.active.is_some()
+            && Board::from_visible(&step_observation.cells,baseline).is_ok_and(|b| b==snapshot.board);
+        if verified {
+            trusted=step_observation;
+            break;
+        }
+        // Do not contaminate temporal tracking with an untrusted frame.
+        vision.seed(&trusted);
+        if Instant::now()>=deadline {
+            bail!("temporary visual desync after {a:?}; safe path recovery requested");
+        }
+        std::thread::sleep(Duration::from_millis(8));
        }
       }
      }
@@ -327,6 +364,26 @@ impl Runtime {
     })();
     if let Err(e)=outcome {
      let error=format!("{e:#}");
+     // Retrying is allowed only before any potentially irreversible hard drop.
+     // A fresh, high-confidence observation must match this exact board,
+     // queue and HOLD before the GUI can schedule another turn.
+     if phase=="execute path" && !hard_drop_sent && cancel.reason().is_none() {
+      if let Some(snapshot)=recovery_snapshot {
+       let report=serde_json::json!({
+        "reason":&error,"phase":phase,"placement":placement,
+        "planned_actions":actions,"completed_actions":completed_actions,
+        "last_action":last_action,"target_window":bound_target,
+        "foreground_window":input::foreground(),
+       });
+       if std::fs::create_dir_all("logs").is_ok() {
+        if let Ok(json)=serde_json::to_string_pretty(&report) {
+         let _=std::fs::write("logs/last-recovery.json",json);
+        }
+       }
+       let _=etx.send(Event::Recovering {reason:error,snapshot});
+       continue;
+      }
+     }
      let report=serde_json::json!({"error":error,"phase":phase,"cancel_reason":cancel.reason().map(|r|r.to_string()),"target_window":bound_target,"foreground_window":input::foreground(),"placement":placement,"planned_actions":actions,"completed_actions":completed_actions,"last_action":last_action});
      if std::fs::create_dir_all("logs").is_ok(){if let Ok(json)=serde_json::to_string_pretty(&report){let _=std::fs::write("logs/last-error.json",json);}}
      cancel.stop();if let Some(c)=client.as_mut(){if c.stop().is_err(){client=None;}}synchronized=None;let _=etx.send(Event::Failed(error));

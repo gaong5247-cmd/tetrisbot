@@ -87,6 +87,10 @@ pub struct Debugger {
     baseline: bool,
     empty_hold: bool,
     debug: bool,
+    always_on_top: bool,
+    /// Expected unchanged stack/queue after a reversible, unfinished move.
+    recovery: Option<(Snapshot, Instant)>,
+    recovery_attempts: u8,
     mode: Mode,
     moves: Vec<Placement>,
     last_key: String,
@@ -116,6 +120,9 @@ impl Debugger {
             baseline: false,
             empty_hold: false,
             debug: true,
+            always_on_top: true,
+            recovery: None,
+            recovery_attempts: 0,
             mode: Mode::Original,
             moves: vec![],
             last_key: String::new(),
@@ -133,6 +140,7 @@ impl Debugger {
     }
     fn stop(&mut self, reason: &str) {
         self.armed = false;
+        self.recovery = None;
         if reason.starts_with("Emergency stop") {
             self.runtime
                 .cancel
@@ -191,12 +199,30 @@ impl Debugger {
                     self.search.record(t);
                 }
                 Event::PreviewDone => self.busy = false,
+                Event::Recovering { reason, snapshot } => {
+                    self.busy = false;
+                    self.last_key.clear();
+                    if self.armed {
+                        self.recovery_attempts = self.recovery_attempts.saturating_add(1);
+                        if self.recovery_attempts > 3 {
+                            self.error = format!("Reversible path failed repeatedly: {reason}");
+                            self.stop("Automatic retries exhausted; confirm the board before Start AI");
+                        } else {
+                            self.recovery = Some((snapshot, Instant::now()));
+                            self.status = format!(
+                                "Rechecking board before safe retry ({}/3): {reason}",
+                                self.recovery_attempts
+                            );
+                        }
+                    }
+                }
                 Event::Completed {
                     observation: _,
                     input_ms,
                     verify_ms,
                 } => {
                     self.completed += 1;
+                    self.recovery_attempts = 0;
                     self.input.record(input_ms);
                     self.verify.record(verify_ms);
                     self.busy = false;
@@ -216,6 +242,11 @@ impl Debugger {
         if self.busy || !self.preview || !self.baseline {
             return;
         }
+        if self.recovery.as_ref().is_some_and(|(_, since)| since.elapsed() > Duration::from_secs(3)) {
+            self.error = "Could not restore a verified T-spin/path state within 3 seconds".into();
+            self.stop("Recovery timed out; Start AI again only after confirming the board");
+            return;
+        }
         let Some(v) = self.view.as_ref() else { return };
         if v.state != State::Locked
             || v.observation.confidence < 0.9
@@ -228,8 +259,18 @@ impl Debugger {
         if self.empty_hold && o.hold == Known::Unknown {
             o.hold = Known::Value(None);
         }
-        if Snapshot::from_observation(&o, self.baseline).is_err() {
+        let Ok(observed_snapshot) = Snapshot::from_observation(&o, self.baseline) else {
             return;
+        };
+        if let Some((expected, since)) = &self.recovery {
+            if since.elapsed() < Duration::from_millis(120) {
+                return;
+            }
+            if !runtime::same_reversible_state(expected, &observed_snapshot) {
+                self.error = "Board, NEXT or HOLD changed during an unfinished path".into();
+                self.stop("Unsafe to auto-resume: game state diverged");
+                return;
+            }
         }
         let key = format!(
             "{:?}/{:?}/{:?}",
@@ -263,6 +304,7 @@ impl Debugger {
         if self.runtime.jobs.try_send(job).is_ok() {
             self.busy = true;
             self.last_key = key;
+            self.recovery = None;
         }
     }
     fn capture_image(&mut self, ctx: &egui::Context) {
@@ -476,6 +518,8 @@ impl eframe::App for Debugger {
                     .clicked()
                 {
                     self.runtime.cancel.reset();
+                    self.recovery = None;
+                    self.recovery_attempts = 0;
                     self.armed = true;
                     self.preview = true;
                     self.last_key.clear();
@@ -511,6 +555,15 @@ impl eframe::App for Debugger {
                     }
                 }
                 ui.checkbox(&mut self.debug, "Debug Mode");
+                if ui.checkbox(&mut self.always_on_top, "Always on Top").changed() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                        if self.always_on_top {
+                            egui::WindowLevel::AlwaysOnTop
+                        } else {
+                            egui::WindowLevel::Normal
+                        },
+                    ));
+                }
             });
             ui.horizontal(|ui| {
                 let before = self.baseline;
@@ -583,7 +636,8 @@ pub fn run(cfg: Config) -> Result<()> {
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([1300., 820.])
-                .with_position([600., 20.]),
+                .with_position([600., 20.])
+                .with_always_on_top(),
             ..Default::default()
         },
         Box::new(move |cc| {
@@ -601,6 +655,8 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
     let rt = Runtime::start(cfg);
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let mut busy = false;
+    let mut recovery_guard: Option<(Snapshot, Instant)> = None;
+    let mut recovery_attempts = 0u8;
     let mut completed = 0;
     let mut capture = Timings::default();
     let mut vision = Timings::default();
@@ -622,6 +678,8 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
                     ..
                 } => {
                     completed += 1;
+                    recovery_guard = None;
+                    recovery_attempts = 0;
                     inputs.record(input_ms);
                     verify.record(verify_ms);
                     busy = false;
@@ -631,6 +689,16 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
                     search.record(ms);
                 }
                 Event::PreviewDone => busy = false,
+                Event::Recovering { reason, snapshot } => {
+                    busy = false;
+                    last.clear();
+                    recovery_attempts = recovery_attempts.saturating_add(1);
+                    if recovery_attempts > 3 {
+                        failures.push(format!("headless recovery budget exhausted: {reason}"));
+                    } else {
+                        recovery_guard = Some((snapshot, Instant::now()));
+                    }
+                }
                 Event::Failed(e) => {
                     failures.push(e);
                     busy = false;
@@ -672,8 +740,22 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
         if !allow_input || busy || !failures.is_empty() || v.state != State::Locked {
             continue;
         }
-        if Snapshot::from_observation(&v.observation, fresh).is_err() {
+        let Ok(observed) = Snapshot::from_observation(&v.observation, fresh) else {
             continue;
+        };
+        if let Some((expected, since)) = &recovery_guard {
+            if since.elapsed() > Duration::from_secs(3) {
+                failures.push("headless reversible path could not revalidate within 3s".into());
+                break;
+            }
+            if since.elapsed() < Duration::from_millis(120) {
+                continue;
+            }
+            if !runtime::same_reversible_state(expected, &observed) {
+                failures.push("headless board/queue/HOLD diverged before retry".into());
+                break;
+            }
+            recovery_guard = None;
         }
         let g = v.grid.unwrap();
         let r = g.rect();

@@ -23,7 +23,18 @@ fn lock_loss_move_and_recovery() {
     assert_eq!(t.state, State::Validating);
     t.update(&[g]);
     assert!(t.may_input());
+    let generation = t.generation;
     t.update(&[]);
+    assert_eq!(t.state, State::Locked);
+    assert!(!t.may_input());
+    assert_eq!(t.generation, generation);
+    t.update(&[]);
+    assert_eq!(t.state, State::Locked);
+    assert!(!t.may_input());
+    t.update(&[g]);
+    assert!(t.may_input(), "valid frame should restore tracking immediately");
+    assert_eq!(t.generation, generation);
+    for _ in 0..3 { t.update(&[]); }
     assert_eq!(t.state, State::Lost);
     assert!(!t.may_input());
     t.update(&[]);
@@ -140,10 +151,36 @@ fn attached_t_spin_keeps_grid_lock_and_temporal_piece_tracking() {
     assert_eq!(observed.active.unwrap().rotation, Rotation::South);
     let old_grid = tracker.grid.unwrap();
     let moved = lab.frame(1280, 720, (600, 90), 24, 0, true);
-    assert!(
-        !tracker.observe_frame(&moved),
-        "actual grid movement must still pause"
-    );
+    for i in 0..3 {
+        assert!(!tracker.observe_frame(&moved), "moved grid frame {i}");
+        assert!(!tracker.may_input(), "unconfirmed grid must never permit input");
+    }
     assert_eq!(tracker.state, State::Lost);
     assert_eq!(old_grid.x, grid.x);
+}
+
+#[test]
+fn reversible_t_spin_recovery_requires_same_board_queue_and_hold() {
+    use gui::runtime::same_reversible_state;
+    let before = Snapshot {
+        board: Board::default(),
+        active: Location::spawn(Piece::T),
+        hold: Some(Piece::I),
+        next: vec![Piece::L, Piece::J, Piece::S],
+        combo: 2,
+        back_to_back: true,
+    };
+    let mut after = before.clone();
+    // Reversible Down/Rotate inputs can change location, not the queue.
+    after.active.y -= 1;
+    after.active.rotation = Rotation::East;
+    assert!(same_reversible_state(&before, &after));
+    after.board.rows[0] |= 1 << 4;
+    assert!(!same_reversible_state(&before, &after), "unexpected lock is irreversible");
+    after.board = before.board;
+    after.next.remove(0);
+    assert!(!same_reversible_state(&before, &after), "spawned piece changed queue");
+    after.next = before.next.clone();
+    after.hold = None;
+    assert!(!same_reversible_state(&before, &after), "HOLD changed");
 }
