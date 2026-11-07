@@ -369,6 +369,17 @@ impl Runtime {
      // queue and HOLD before the GUI can schedule another turn.
      if phase=="execute path" && !hard_drop_sent && cancel.reason().is_none() {
       if let Some(snapshot)=recovery_snapshot {
+       let report=serde_json::json!({
+        "reason":&error,"phase":phase,"placement":placement,
+        "planned_actions":actions,"completed_actions":completed_actions,
+        "last_action":last_action,"target_window":bound_target,
+        "foreground_window":input::foreground(),
+       });
+       if std::fs::create_dir_all("logs").is_ok() {
+        if let Ok(json)=serde_json::to_string_pretty(&report) {
+         let _=std::fs::write("logs/last-recovery.json",json);
+        }
+       }
        let _=etx.send(Event::Recovering {reason:error,snapshot});
        continue;
       }
