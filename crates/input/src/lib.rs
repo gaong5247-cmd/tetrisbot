@@ -1,6 +1,8 @@
 //! Explicit pulse/release input, foreground binding and F10 cancellation.
 use anyhow::{Result, bail};
 use movement::{Action, MovementProfile};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::{
     sync::{
         Arc,
@@ -68,6 +70,105 @@ pub fn key(a: Action) -> u16 {
         Action::Hold => 0x43,
     }
 }
+/// Configurable key bindings for different Tetris games. The names are
+/// converted to Windows virtual-key codes at startup, not per keypress.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeyBindings {
+    pub left: String,
+    pub right: String,
+    pub cw: String,
+    pub ccw: String,
+    pub down: String,
+    pub hard_drop: String,
+    pub hold: String,
+}
+impl Default for KeyBindings {
+    fn default() -> Self {
+        Self {
+            left: "Left".into(),
+            right: "Right".into(),
+            cw: "X".into(),
+            ccw: "Z".into(),
+            down: "Down".into(),
+            hard_drop: "Space".into(),
+            hold: "C".into(),
+        }
+    }
+}
+/// Common, layout-independent Windows virtual-key names. Unsupported keys
+/// are rejected instead of silently sending some other input.
+pub fn virtual_key(name: &str) -> Result<u16> {
+    let name = name.trim().to_ascii_uppercase().replace([' ', '_', '-'], "");
+    let vk = match name.as_str() {
+        "LEFT" | "ARROWLEFT" => 0x25,
+        "RIGHT" | "ARROWRIGHT" => 0x27,
+        "UP" | "ARROWUP" => 0x26,
+        "DOWN" | "ARROWDOWN" => 0x28,
+        "SPACE" | "SPACEBAR" => 0x20,
+        "SHIFT" => 0x10,
+        "LSHIFT" | "LEFTSHIFT" => 0xA0,
+        "RSHIFT" | "RIGHTSHIFT" => 0xA1,
+        "CTRL" | "CONTROL" => 0x11,
+        "LCTRL" | "LEFTCTRL" | "LEFTCONTROL" => 0xA2,
+        "RCTRL" | "RIGHTCTRL" | "RIGHTCONTROL" => 0xA3,
+        "ENTER" | "RETURN" => 0x0D,
+        "TAB" => 0x09,
+        "BACKSPACE" => 0x08,
+        "ESC" | "ESCAPE" => 0x1B,
+        "COMMA" => 0xBC,
+        "PERIOD" | "DOT" => 0xBE,
+        "SLASH" => 0xBF,
+        "SEMICOLON" => 0xBA,
+        "APOSTROPHE" | "QUOTE" => 0xDE,
+        "MINUS" => 0xBD,
+        "EQUALS" | "EQUAL" => 0xBB,
+        "INSERT" => 0x2D,
+        "DELETE" => 0x2E,
+        "HOME" => 0x24,
+        "END" => 0x23,
+        "PAGEUP" => 0x21,
+        "PAGEDOWN" => 0x22,
+        _ => {
+            let chars: Vec<char> = name.chars().collect();
+            if chars.len() == 1 && chars[0].is_ascii_alphanumeric() {
+                chars[0] as u16
+            } else if let Some(n) = name.strip_prefix('F').and_then(|s| s.parse::<u16>().ok()) {
+                if (1..=12).contains(&n) { 0x70 + n - 1 } else { bail!("unsupported key: {name}") }
+            } else {
+                bail!("unsupported key: {name}");
+            }
+        }
+    };
+    Ok(vk)
+}
+impl KeyBindings {
+    pub fn name(&self, action: Action) -> &str {
+        match action {
+            Action::Left => &self.left,
+            Action::Right => &self.right,
+            Action::Cw => &self.cw,
+            Action::Ccw => &self.ccw,
+            Action::Down => &self.down,
+            Action::HardDrop => &self.hard_drop,
+            Action::Hold => &self.hold,
+        }
+    }
+    pub fn key(&self, action: Action) -> Result<u16> {
+        virtual_key(self.name(action))
+    }
+    pub fn validate(&self) -> Result<()> {
+        let mut used = HashSet::new();
+        for a in [Action::Left, Action::Right, Action::Cw, Action::Ccw,
+                  Action::Down, Action::HardDrop, Action::Hold] {
+            let vk = self.key(a)?;
+            if vk == 0x79 { bail!("F10 is reserved for emergency stop"); }
+            if !used.insert(vk) { bail!("duplicate control binding: {}", self.name(a)); }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(windows)]
 mod platform {
     use super::*;
@@ -140,14 +241,14 @@ pub struct Keyboard {
     pressed: Vec<u16>,
     pub cancel: Cancellation,
     pub target: isize,
+    bindings: KeyBindings,
 }
 impl Keyboard {
     pub fn new(cancel: Cancellation, target: isize) -> Self {
-        Self {
-            pressed: vec![],
-            cancel,
-            target,
-        }
+        Self::with_bindings(cancel, target, KeyBindings::default())
+    }
+    pub fn with_bindings(cancel: Cancellation, target: isize, bindings: KeyBindings) -> Self {
+        Self { pressed: vec![], cancel, target, bindings }
     }
     pub fn check(&self) -> Result<()> {
         if let Some(reason) = self.cancel.reason() {
@@ -176,7 +277,7 @@ impl Keyboard {
     }
     pub fn pulse(&mut self, a: Action, p: &MovementProfile) -> Result<()> {
         self.check()?;
-        let vk = key(a);
+        let vk = self.bindings.key(a)?;
         send(vk, false)?;
         self.pressed.push(vk);
         let result = self.wait(p.pulse_ms);
