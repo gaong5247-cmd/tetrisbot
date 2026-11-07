@@ -629,6 +629,11 @@ impl eframe::App for Debugger {
                 });
             if changed_profile {
                 self.profile_pending = true;
+                // Never keep sending keys under an old mapping after the user
+                // changes the game profile. Require explicit Apply and re-arm.
+                if self.armed || self.busy {
+                    self.stop("Game controls changed; apply profile before resuming AI");
+                }
             }
             if apply_profile {
                 self.apply_game_profile();
