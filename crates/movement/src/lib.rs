@@ -1,6 +1,6 @@
 //! Timed pulse-input BFS with SRS true-rotation kick offsets.
 //! Offset tables are derived from CC2 movegen.rs (MIT), revision in THIRD_PARTY.md.
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use game_state::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -208,6 +208,93 @@ pub fn plan(snapshot: &Snapshot, target: Placement, profile: &MovementProfile) -
         }
     }
     plan_search(snapshot, target, profile, true, profile.max_nodes)
+}
+
+/// Explicit NO T-SPIN strategy.
+///
+/// First honor Cold Clear 2's reachable, non-spin recommendation. When it
+/// suggests only Mini/Full spins, generate ordinary grounded placements
+/// locally instead of spinning or stopping. Every candidate still passes
+/// the regular timed SRS input planner and the runtime's visual checkpoint.
+///
+/// This is current-piece-only: no hidden NEXT/HOLD information is invented.
+pub fn plan_no_t_spin(
+    snapshot: &Snapshot,
+    engine_moves: &[Placement],
+    profile: &MovementProfile,
+) -> Result<Plan> {
+    profile.validate()?;
+    for &candidate in engine_moves {
+        if candidate.spin != Spin::None || candidate.location.piece != snapshot.active.piece {
+            continue;
+        }
+        if let Ok(path) = plan(snapshot, candidate, profile) {
+            if !path.uses_hold && path.placement.spin == Spin::None {
+                return Ok(path);
+            }
+        }
+    }
+
+    let mut candidates: Vec<(i32, Placement)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for rotation in ROTATIONS {
+        for x in -2..12i8 {
+            // Try each orientation from a high, collision-free position.
+            // The normal planner verifies that the current live piece can
+            // actually reach its final landing, including the SRS kicks.
+            let high = Location { piece: snapshot.active.piece, rotation, x, y: 20 };
+            if snapshot.board.collides(high) { continue }
+            let location = snapshot.board.dropped(high);
+            let mut cells = location.cells();
+            cells.sort();
+            if !seen.insert(cells) { continue }
+            if cells.iter().any(|&(_, y)| y >= 20) { continue }
+            let mut board = snapshot.board;
+            let Ok(lines) = board.lock(location) else { continue };
+            let score = ordinary_stack_score(&board, lines);
+            candidates.push((score, Placement {location, spin:Spin::None}));
+        }
+    }
+    candidates.sort_unstable_by(|a,b| b.0.cmp(&a.0));
+    for (_, placement) in candidates.into_iter().take(18) {
+        if let Ok(route) = plan(snapshot, placement, profile) {
+            if !route.uses_hold && route.placement.spin == Spin::None {
+                return Ok(route);
+            }
+        }
+    }
+    // Safe last resort: hard-drop the observed piece from its verified
+    // current location rather than invent a spin or leaving autoplay stuck.
+    let landing = snapshot.board.dropped(snapshot.active);
+    let fallback = Placement {location:landing, spin:Spin::None};
+    let route = plan(snapshot, fallback, profile)
+        .context("no reachable non-T-spin placement (including current straight drop)")?;
+    if route.uses_hold || route.placement.spin != Spin::None {
+        bail!("NO T-SPIN forbids Hold and Mini/Full spin placements");
+    }
+    Ok(route)
+}
+
+/// Light-weight one-piece board evaluation for the rare case where CC2
+/// provides only T-spin moves. Avoid deep holes, towers and rough surfaces;
+/// reward line clears without assuming any future tetromino sequence.
+fn ordinary_stack_score(board: &Board, lines: u32) -> i32 {
+    let mut heights = [0i32;10];
+    let mut holes = 0i32;
+    for x in 0..10 {
+        let mut seen_block=false;
+        for y in (0..20).rev() {
+            if board.rows[y] & (1 << x) != 0 {
+                if !seen_block { heights[x]=y as i32+1; seen_block=true; }
+            } else if seen_block {
+                holes+=1;
+            }
+        }
+    }
+    let max_height=*heights.iter().max().unwrap_or(&0);
+    let aggregate: i32=heights.iter().sum();
+    let bumps: i32=heights.windows(2).map(|pair|(pair[0]-pair[1]).abs()).sum();
+    (lines as i32)*210 - holes*85 - max_height*16 - aggregate*2 - bumps*5
 }
 
 fn plan_search(
