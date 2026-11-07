@@ -18,6 +18,100 @@ fn lower_active_evidence_survives_worker_handoff() {
     assert_eq!(fresh.active.unwrap().piece, lab.active.piece);
     assert!(PlanningSnapshot::from_observation(&fresh, true).is_ok());
 }
+
+#[test]
+fn uniformly_filled_neutral_gray_ghost_is_not_locked_terrain() {
+    use capture::{Frame, Rect};
+    use detection::Grid;
+    let grid=Grid{x:60.,y:35.,cw:24.,ch:24.,score:1.,shape_evidence:true};
+    let mut f=Frame::new(Rect{x:0,y:0,width:360,height:550},[7,9,13,255]);
+    let mut paint=|x:i8,y:i8,col:[u8;4]| {
+        f.fill(Rect{
+            x:grid.x as i32+x as i32*24+1,
+            y:grid.y as i32+(19-y as i32)*24+1,
+            width:22,height:22
+        },col);
+    };
+    let active=Location{piece:Piece::T,rotation:Rotation::North,x:5,y:12};
+    for (x,y) in Board::default().dropped(active).cells() {
+        paint(x,y,[160,160,160,255]);
+    }
+    for (x,y) in active.cells() {paint(x,y,[183,58,151,255]);}
+    paint(0,0,[110,110,110,255]); // a genuinely locked block
+    let o=vision::Vision::default().observe(&f,grid);
+    assert!(o.active.unwrap().same_cells(active));
+    assert_eq!(o.cells.iter().flatten().filter(|c|c.kind==CellKind::Ghost).count(),4);
+    let board=Board::from_visible(&o.cells,true).unwrap();
+    assert_eq!(board.rows[0],1);
+    assert!(board.rows[1..].iter().all(|&r|r==0));
+}
+
+#[test]
+fn faint_neutral_gray_ghost_does_not_create_uncertain_cells() {
+    use capture::{Frame, Rect};
+    use detection::Grid;
+    let grid=Grid{x:60.,y:35.,cw:24.,ch:24.,score:1.,shape_evidence:true};
+    let mut f=Frame::new(Rect{x:0,y:0,width:360,height:550},[7,9,13,255]);
+    let active=Location{piece:Piece::T,rotation:Rotation::North,x:5,y:12};
+    for (x,y) in Board::default().dropped(active).cells() {
+        f.fill(Rect{x:60+x as i32*24+1,y:35+(19-y as i32)*24+1,
+            width:22,height:22},[28,28,28,255]);
+    }
+    for (x,y) in active.cells() {
+        f.fill(Rect{x:60+x as i32*24+1,y:35+(19-y as i32)*24+1,
+            width:22,height:22},[183,58,151,255]);
+    }
+    let o=vision::Vision::default().observe(&f,grid);
+    assert!(o.active.unwrap().same_cells(active));
+    assert_eq!(o.cells.iter().flatten().filter(|c|c.kind==CellKind::Ghost).count(),4);
+    assert!(o.confidence>=0.9);
+    assert_eq!(Board::from_visible(&o.cells,true).unwrap(),Board::default());
+}
+
+#[test]
+fn previously_locked_gray_cells_are_not_turned_into_ghosts() {
+    use capture::{Frame, Rect};
+    use detection::Grid;
+    let grid=Grid{x:60.,y:35.,cw:24.,ch:24.,score:1.,shape_evidence:true};
+    let mut f=Frame::new(Rect{x:0,y:0,width:360,height:550},[7,9,13,255]);
+    let active=Location{piece:Piece::T,rotation:Rotation::North,x:5,y:12};
+    let locked=Board::default().dropped(active);
+    let mut expected=Board::default();
+    let mut prior=Observation {
+        cells:[[Cell{kind:CellKind::Empty,confidence:1.};10];20],
+        active:Some(active),confidence:0.99,..Default::default()
+    };
+    for (x,y) in locked.cells() {
+        expected.rows[y as usize]|=1<<x;
+        prior.cells[(19-y) as usize][x as usize].kind=CellKind::Locked;
+        f.fill(Rect{x:60+x as i32*24+1,y:35+(19-y as i32)*24+1,
+            width:22,height:22},[160,160,160,255]);
+    }
+    for (x,y) in active.cells() {
+        f.fill(Rect{x:60+x as i32*24+1,y:35+(19-y as i32)*24+1,
+            width:22,height:22},[183,58,151,255]);
+    }
+    let mut v=vision::Vision::default();
+    v.seed(&prior);
+    let o=v.observe(&f,grid);
+    assert_eq!(Board::from_visible(&o.cells,true).unwrap(),expected);
+}
+
+#[test]
+fn transient_blank_frame_does_not_poison_previous_active_piece() {
+    let mut lab=Lab::default();
+    let (_,g)=fixture(1280,720,(300,90),24,0,true);
+    let mut v=vision::Vision::default();
+    let initial=v.observe(&lab.frame(1280,720,(300,90),24,0,true),g);
+    assert!(initial.confidence>=0.9);
+    let blank=capture::Frame::new(g.rect(),[7,9,13,255]);
+    assert!(v.observe(&blank,g).confidence<0.9);
+    lab.active.x+=1;
+    let recovered=v.observe(&lab.frame(1280,720,(300,90),24,0,true),g);
+    assert!(recovered.active.unwrap().same_cells(lab.active));
+    assert!(v.motion_seen,"motion evidence should survive a one-frame dropout");
+}
+
 #[test]
 fn all_shapes_all_rotations() {
     for piece in PIECES {
