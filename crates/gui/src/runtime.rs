@@ -54,6 +54,14 @@ struct Shared {
     monitor: usize,
     epoch: u64,
 }
+/// Input can be retried only if no placement has locked and the game's
+/// stack, current piece/queue identity and HOLD are unchanged.
+/// A reversible rotation or movement may change active position.
+pub fn same_reversible_state(before: &Snapshot, after: &Snapshot) -> bool {
+    before.board == after.board
+        && before.queue() == after.queue()
+        && before.hold == after.hold
+}
 pub struct Runtime {
     pub views: Receiver<Result<View>>,
     pub jobs: Sender<Job>,
