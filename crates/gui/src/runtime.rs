@@ -5,7 +5,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use detection::{Grid, State, Tracker, scan};
 use game_state::*;
 use input::{Cancellation, Keyboard, StopReason};
-use movement::{Action, plan, should_verify_after_action};
+use movement::{Action, plan, plan_no_t_spin, should_verify_after_action};
 use std::path::Path;
 use std::{
     sync::{
@@ -421,8 +421,22 @@ impl Runtime {
          Duration::from_millis(cfg.engine_timeout_ms), &snapshot)?;
      let elapsed=start.elapsed().as_secs_f64()*1000.;
      if restarted {let _=etx.send(Event::Status("Cold Clear 2 search recovered by restarting engine".into()));}
-     let _=etx.send(Event::Suggestion(moves.clone(),elapsed));
-     if !execute{let _=etx.send(Event::PreviewDone);return Ok(())}
+     if !execute {
+      // Preview reflects the strategy actually selected, not an engine
+      // T-spin that NO T-SPIN mode will never execute.
+      let displayed=if cfg.no_t_spin {
+       plan_no_t_spin(&snapshot,&moves,&cfg.movement)
+        .ok().map(|path|vec![path.placement]).unwrap_or_default()
+      } else {
+       moves.clone()
+      };
+      let _=etx.send(Event::Suggestion(displayed,elapsed));
+      let _=etx.send(Event::PreviewDone);
+      return Ok(());
+     }
+     if !cfg.no_t_spin {
+      let _=etx.send(Event::Suggestion(moves.clone(),elapsed));
+     }
      phase="bind target";
      if let Some(reason)=cancel.reason() {bail!("AI canceled: {reason}")}
      // Bind to the desktop window containing the observed board, never a guessed game coordinate.
@@ -463,13 +477,24 @@ impl Runtime {
      if current_snapshot.board!=snapshot.board
          || current_snapshot.active.piece!=snapshot.active.piece
      {bail!("state changed during engine search (possible unverified garbage attack)")}
-     // Ignore every suggestion for any piece other than the observed active.
-     let chosen=moves.iter()
-        .filter(|m| m.location.piece == current_snapshot.active.piece)
-        .find_map(|&m| plan(&current_snapshot,m,&cfg.movement).ok())
-        .context("no reachable current-piece recommendation from Cold Clear 2")?;
+     // NO T-SPIN removes Mini/Full recommendations. A legal normal
+     // placement is generated locally if CC2 suggests only spin routes.
+     let chosen=if cfg.no_t_spin {
+      plan_no_t_spin(&current_snapshot,&moves,&cfg.movement)?
+     } else {
+      moves.iter()
+       .filter(|m| m.location.piece == current_snapshot.active.piece)
+       .find_map(|&m| plan(&current_snapshot,m,&cfg.movement).ok())
+       .context("no reachable current-piece recommendation from Cold Clear 2")?
+     };
      if chosen.uses_hold || chosen.actions.contains(&Action::Hold) {
       bail!("HOLD actions are forbidden in current-piece-only mode")
+     }
+     if cfg.no_t_spin {
+      if chosen.placement.spin!=Spin::None {
+       bail!("NO T-SPIN strategy refused a Mini/Full spin")
+      }
+      let _=etx.send(Event::Suggestion(vec![chosen.placement],elapsed));
      }
      phase="execute path";actions=chosen.actions.clone();placement=Some(chosen.placement);
      let mut trusted=current.clone();
