@@ -18,6 +18,18 @@ fn median_color(v: &[[u8; 3]]) -> [u8; 3] {
         a[a.len() / 2]
     })
 }
+/// Per-cell median uses fixed-size storage: 200 cells need no heap
+/// allocations just to find the median of nine color samples.
+fn median_sample_color(v: &[[u8; 3]; 9]) -> [u8; 3] {
+    std::array::from_fn(|channel| {
+        let mut values = [0u8; 9];
+        for (i, pixel) in v.iter().enumerate() {
+            values[i] = pixel[channel];
+        }
+        values.sort_unstable();
+        values[4]
+    })
+}
 fn sample(f: &Frame, cx: f32, cy: f32, cw: f32, ch: f32) -> ([u8; 3], f32, [[u8;3];9]) {
     let mut v = [[0u8;3];9];
     let mut index=0;
@@ -28,7 +40,7 @@ fn sample(f: &Frame, cx: f32, cy: f32, cw: f32, ch: f32) -> ([u8; 3], f32, [[u8;
             index+=1;
         }
     }
-    let median = median_color(&v);
+    let median = median_sample_color(&v);
     let spread = v.iter().map(|&p| contrast(p, median)).sum::<f32>() / 9.;
     (median, spread, v)
 }
@@ -135,6 +147,19 @@ fn dimmer_same_hue(bright: [f32;3], dim: [f32;3], bg: [u8;3]) -> bool {
     let ratio=(bb/aa).sqrt();
     (0.25..0.84).contains(&ratio) && dot > 0.95*(aa*bb).sqrt()
 }
+/// Neutral gray ghosts in some games do not preserve the active piece hue.
+/// This relative chroma check is palette-free and only supplies a candidate;
+/// exact four-cell geometry and the simulated landing are still mandatory.
+fn neutral_ghost_tint(bright: [f32; 3], candidate: [f32; 3], bg: [u8; 3]) -> bool {
+    let chroma = |color: [f32; 3]| {
+        color.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+            - color.iter().copied().fold(f32::INFINITY, f32::min)
+    };
+    let contrast = candidate.iter().zip(bg.iter())
+        .map(|(value, base)| (value - *base as f32).abs())
+        .sum::<f32>() / 3.0;
+    chroma(bright) > 35.0 && chroma(candidate) < 19.0 && contrast > 14.0
+}
 /// Only classify a four-cell dim overlay as ghost if it is a SAME-SHAPE,
 /// same-hue dim copy at the exactly simulated landing of a brighter active
 /// piece. Real locked pieces (including garbage) are never cleared merely
@@ -152,7 +177,7 @@ fn dimmed_ghost_cells(raw: &[[bool;10];20], colors:&[[u8;3]], bg:[u8;3],
     for (a,aloc,acol) in &shapes {
         for (b,bloc,bcol) in &shapes {
             if std::ptr::eq(*a,*b) || aloc.piece!=bloc.piece {continue}
-            if !dimmer_same_hue(*acol,*bcol,bg) {continue}
+            if !(dimmer_same_hue(*acol,*bcol,bg) || neutral_ghost_tint(*acol,*bcol,bg)) {continue}
             if aloc.y <= bloc.y {continue}
             if previous.is_some_and(|prev| b.iter().any(|&(x,y)|
                 prev.cells[(19-y) as usize][x as usize].kind==CellKind::Locked)) {continue}
@@ -468,10 +493,10 @@ impl Vision {
                 let bb: f32=b.iter().map(|v|v*v).sum();
                 let dot: f32=(0..3).map(|k|a[k]*b[k]).sum();
                 let ratio=if aa>0. { (bb/aa).sqrt() } else {0.};
-                if aa>400. && bb>80.
+                let same_hue = aa>400. && bb>80.
                     && (0.08..0.85).contains(&ratio)
-                    && dot>0.94*(aa*bb).sqrt()
-                {
+                    && dot>0.94*(aa*bb).sqrt();
+                if same_hue || neutral_ghost_tint(active_color,faint,bg) {
                     weak_ghost.push((xi,yi));
                 }
             }
@@ -525,8 +550,12 @@ impl Vision {
         if o.active.is_none() {
             o.confidence = o.confidence.min(0.4);
         }
-        self.previous_raw = Some(raw);
-        self.previous = Some(o.clone());
+        // A one-frame flash/line-clear is not reliable temporal evidence.
+        // Preserve the last verified board and silhouette for the next frame.
+        if o.confidence >= 0.9 && o.active.is_some() {
+            self.previous_raw = Some(raw);
+            self.previous = Some(o.clone());
+        }
         o
     }
 }
