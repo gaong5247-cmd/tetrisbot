@@ -17,3 +17,19 @@ jobs:
         run: cargo test -p app --locked
       - name: Build updated executable
         run: cargo build -p app --release --locked
+      - name: Package portable Windows build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package/engines, package/config | Out-Null
+          Copy-Item target/release/silhouette-tetris.exe package/SilhouetteTetris.exe
+          Copy-Item engines/cold-clear-2.exe package/engines/cold-clear-2.exe
+          Copy-Item config/default.toml package/config/default.toml
+          Copy-Item 'Start egui.cmd' package/'Start egui.cmd'
+          Copy-Item 'Start Local Lab.cmd' package/'Start Local Lab.cmd'
+          Copy-Item README.md package/README.md
+      - name: Upload runnable Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SilhouetteTetris-Windows-x64
+          path: package/
+          retention-days: 14
