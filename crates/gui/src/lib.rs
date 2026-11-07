@@ -104,6 +104,8 @@ pub struct Debugger {
     mode: Mode,
     moves: Vec<Placement>,
     last_key: String,
+    /// New placements require matching observations on separate frames.
+    stable_board: vision::StableBoardGate,
     engine: String,
     capture: Timings,
     vision: Timings,
@@ -136,6 +138,7 @@ impl Debugger {
             mode: Mode::Original,
             moves: vec![],
             last_key: String::new(),
+            stable_board: vision::StableBoardGate::default(),
             engine: "Not connected".into(),
             capture: Timings::default(),
             vision: Timings::default(),
@@ -171,6 +174,7 @@ impl Debugger {
         self.runtime = Runtime::start(self.cfg.clone());
         self.last_generation = 0;
         self.last_key.clear();
+        self.stable_board.reset();
         self.busy = false;
         self.armed = false;
         self.baseline = false;
@@ -200,6 +204,7 @@ impl Debugger {
                         }
                         self.last_generation = v.generation;
                         self.last_key.clear();
+                        self.stable_board.reset();
                         if self.busy {
                             self.runtime
                                 .cancel
@@ -211,11 +216,18 @@ impl Debugger {
                             .cancel
                             .stop_with(input::StopReason::TrackingLost);
                     }
+                    // Only a real new camera frame advances this gate.
+                    if v.state == State::Locked {
+                        self.stable_board.observe(&v.observation,self.baseline);
+                    } else {
+                        self.stable_board.reset();
+                    }
                     self.view = Some(v);
                 }
                 Err(e) => {
                     self.error = format!("{e:#}");
                     self.stop("Capture failed; inputs paused");
+                    self.stable_board.reset();
                     self.view = None;
                 }
             }
@@ -262,6 +274,7 @@ impl Debugger {
                         format!("Verified move {}", self.completed)
                     };
                     self.last_key.clear();
+                    self.stable_board.reset(); // next turn needs fresh visual confirmation
                 }
                 Event::Failed(e) => {
                     self.busy = false;
@@ -291,6 +304,15 @@ impl Debugger {
                     "AI waiting: board={} | confidence={:.2} | frame_age={}ms | active={:?}",
                     v.state, v.observation.confidence,
                     v.frame.at.elapsed().as_millis(), v.observation.active
+                );
+            }
+            return;
+        }
+        if !self.stable_board.confirmed() {
+            if self.armed {
+                self.status = format!(
+                    "Waiting for stable board: {}/2 matching camera frames",
+                    self.stable_board.count().min(2)
                 );
             }
             return;
@@ -564,6 +586,7 @@ impl eframe::App for Debugger {
                     self.armed = true;
                     self.preview = true;
                     self.last_key.clear();
+                    self.stable_board.reset();
                     self.started = Instant::now();
                     self.frames = 0;
                     self.completed = 0;
