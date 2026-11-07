@@ -111,7 +111,7 @@ fn suggest_current_with_restart(
 /// A timeout should explain *which* observation failed; never assume that
 /// SendInput succeeded just because the OS accepted the event.
 #[derive(Default)]
-struct LockDiagnostics {
+pub struct LockDiagnostics {
     frames: u32,
     passed: u32,
     confidence: f32,
@@ -121,7 +121,7 @@ struct LockDiagnostics {
     classification: &'static str,
 }
 impl LockDiagnostics {
-    fn observe(&mut self, observation: &Observation, expected: &Board) -> bool {
+    pub fn observe(&mut self, observation: &Observation, expected: &Board) -> bool {
         self.frames += 1;
         self.confidence = observation.confidence;
         self.active = observation.active;
@@ -146,7 +146,7 @@ impl LockDiagnostics {
         if verified { self.passed += 1; } else { self.passed = 0; }
         self.passed >= 2
     }
-    fn report(&self) -> serde_json::Value {
+    pub fn report(&self) -> serde_json::Value {
         serde_json::json!({
             "classification": self.classification,
             "frames_observed": self.frames,
@@ -441,7 +441,7 @@ impl Runtime {
        // A single ghost/stack-contact animation frame is not proof that a
        // T-spin failed. Reobserve briefly, but do not send the next key until
        // the active piece and unchanged locked stack are both verified.
-       let deadline=Instant::now()+Duration::from_millis(120);
+       let deadline=Instant::now()+Duration::from_millis(220);
        loop {
         keyboard.check()?;
         let step_frame=capture::capture(frame.rect,frame.sequence+2)?;
@@ -449,13 +449,26 @@ impl Runtime {
         let verified=step_observation.confidence>=0.9
             && step_observation.active.is_some()
             && Board::from_visible(&step_observation.cells,baseline).is_ok_and(|b| b==snapshot.board);
-        if verified {
+        // For horizontal moves the active piece's x must actually change.
+        // Merely seeing an active tetromino again does NOT prove that the game
+        // accepted SendInput; otherwise bot keeps moving on a stale model.
+        let movement_accepted=match (trusted.active,step_observation.active,a) {
+            (Some(before),Some(after),Action::Left) => after.piece==before.piece && after.x==before.x-1,
+            (Some(before),Some(after),Action::Right) => after.piece==before.piece && after.x==before.x+1,
+            (Some(before),Some(after),Action::Down) => after.piece==before.piece && after.y<before.y,
+            _=>true,
+        };
+        if verified && movement_accepted {
             trusted=step_observation;
             break;
         }
         // Do not contaminate temporal tracking with an untrusted frame.
         vision.seed(&trusted);
         if Instant::now()>=deadline {
+            if matches!(a,Action::Left|Action::Right|Action::Down) {
+                phase="input delivery";
+                bail!("game did not confirm {a:?} movement within 220ms; check keyboard binding, Scan Code/Virtual Key mode and game focus");
+            }
             bail!("temporary visual desync after {a:?}; safe path recovery requested");
         }
         std::thread::sleep(Duration::from_millis(8));
