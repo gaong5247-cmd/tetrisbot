@@ -284,8 +284,14 @@ pub struct PlanningSnapshot {
 
 impl PlanningSnapshot {
     pub fn from_observation(o: &Observation, baseline: bool) -> Result<Self> {
-        if let Ok(snapshot) = Snapshot::from_observation(o, baseline) {
-            return Ok(Self { snapshot, restricted_no_hold: false });
+        Self::with_mode(o, baseline, false)
+    }
+    /// Preserve restricted mode across recaptures within one planned turn.
+    pub fn with_mode(o: &Observation, baseline: bool, force_restricted: bool) -> Result<Self> {
+        if !force_restricted {
+            if let Ok(snapshot) = Snapshot::from_observation(o, baseline) {
+                return Ok(Self { snapshot, restricted_no_hold: false });
+            }
         }
         if o.confidence < 0.9 {
             bail!("vision confidence below threshold; cannot enter restricted mode")
