@@ -177,12 +177,23 @@ impl Vision {
         // 16-19 lower garbage rows are filled. Once confirmed, keep that
         // reference across rising attacks instead of using the now-majority
         // garbage color as background.
-        let top_bg=median_color(&centers[..40]);
+        let top_row_bg=median_color(&centers[..10]);
+        let top_row_support=centers[..10].iter()
+            .filter(|&&p|contrast(p,top_row_bg)<12.).count();
+        // At an extreme 19/20-row garbage stack the first row may still
+        // expose six background cells, while rows 1-19 are nearly all filled.
+        // Prefer that top row over a four-row median when it is unambiguous.
+        let top_four_bg=median_color(&centers[..40]);
+        let top_four_support=centers[..40].iter()
+            .filter(|&&p|contrast(p,top_four_bg)<12.).count();
+        let (top_bg,support)=if top_row_support>=5 {
+            (top_row_bg,top_row_support)
+        } else {
+            (top_four_bg,top_four_support)
+        };
         let bg=self.background.unwrap_or(top_bg);
-        if self.background.is_none() {
-            let support=centers[..40].iter()
-                .filter(|&&p|contrast(p,top_bg)<12.).count();
-            if support>=12 {self.background=Some(top_bg);}
+        if self.background.is_none() && support>=5 {
+            self.background=Some(top_bg);
         }
         let mut o = Observation::default();
         let mut raw = [[false; 10]; 20];
