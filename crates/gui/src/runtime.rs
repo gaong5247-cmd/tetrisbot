@@ -76,7 +76,7 @@ pub fn validate_input_target(title: &str, allow_external: bool) -> Result<()> {
 }
 /// The solver has not emitted any key yet. A stale/failed Cold Clear 2
 /// child can be replaced once without risking a double hard-drop.
-fn suggest_current_with_restart(
+pub fn suggest_current_with_restart(
     client: &mut Option<tbp_client::Client>,
     engine_path: &Path,
     timeout: Duration,
