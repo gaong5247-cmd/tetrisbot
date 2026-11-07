@@ -346,44 +346,6 @@ impl Vision {
                     None
                 }
             });
-
-            .max_by_key(|(_, p)| p.y)
-            .cloned()
-            .or(touching)
-            .or_else(|| {
-                self.previous
-                    .as_ref()
-                    .and_then(|p| p.active)
-                    .and_then(|prev| {
-                        hypotheses
-                            .iter()
-                            .filter(|(_, p)| {
-                                p.piece == prev.piece
-                                    && (p.x - prev.x).abs() + (p.y - prev.y).abs() <= 4
-                            })
-                            .min_by_key(|(_, p)| (p.x - prev.x).abs() + (p.y - prev.y).abs())
-                            .cloned()
-                    })
-            })
-            .or_else(|| {
-                hypotheses
-                    .iter()
-                    .filter(|(c, _)| c.iter().any(|&(x, y)| moving.contains(&(x, y))))
-                    .max_by_key(|(_, p)| p.y)
-                    .cloned()
-            })
-            .or_else(|| {
-                let upper: Vec<_> = hypotheses
-                    .iter()
-                    .filter(|(_, p)| p.y >= 12)
-                    .cloned()
-                    .collect();
-                if upper.len() == 1 {
-                    Some(upper[0].clone())
-                } else {
-                    None
-                }
-            });
         if let Some((cells, loc)) = chosen {
             o.active = Some(loc);
             if self
