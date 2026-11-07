@@ -24,6 +24,8 @@ pub struct Config {
     /// Only in explicitly agreed multiplayer matches: accept verified
     /// bottom-injected garbage and recalculate the current piece's path.
     pub multiplayer_attack_mode: bool,
+    /// Avoid Mini/Full T-spins; use safe regular placements instead.
+    pub no_t_spin: bool,
     pub controls: input::KeyBindings,
     pub detection: DetectionConfig,
     pub movement: MovementProfile,
@@ -38,6 +40,7 @@ impl Default for Config {
             verification_timeout_ms: 3500,
             allow_external: true,
             multiplayer_attack_mode: false,
+            no_t_spin: false,
             controls: input::KeyBindings::default(),
             detection: DetectionConfig::default(),
             movement: MovementProfile::default(),
@@ -681,6 +684,11 @@ impl eframe::App for Debugger {
             egui::CollapsingHeader::new("Placement Speed & Safety")
                 .default_open(false)
                 .show(ui, |ui| {
+                    changed_profile |= ui.checkbox(
+                        &mut self.cfg.no_t_spin,
+                        "NO T-SPIN (ordinary placements only)"
+                    ).changed();
+                    ui.small("Mini/Full T-spin recommendations are excluded. If CC2 only suggests spins, calculate a reachable non-spin placement instead.");
                     ui.label("Horizontal screenshot frequency:");
                     changed_profile |= ui.add(
                         egui::Slider::new(&mut self.cfg.movement.horizontal_verify_stride, 1..=3)
