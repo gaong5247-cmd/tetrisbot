@@ -99,7 +99,7 @@ impl Default for KeyBindings {
 /// Common, layout-independent Windows virtual-key names. Unsupported keys
 /// are rejected instead of silently sending some other input.
 pub fn virtual_key(name: &str) -> Result<u16> {
-    let name = name.trim().to_ascii_uppercase().replace([' ', '_', '-'], "");
+    let name = name.trim().to_ascii_uppercase().replace(' ', "").replace('_', "").replace('-', "");
     let vk = match name.as_str() {
         "LEFT" | "ARROWLEFT" => 0x25,
         "RIGHT" | "ARROWRIGHT" => 0x27,
