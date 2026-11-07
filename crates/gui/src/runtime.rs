@@ -554,6 +554,8 @@ impl Runtime {
      let mut verifier=vision::Vision::default();
      verifier.seed(&trusted); // keep pre-drop history through spawn/line-clear animation
      let mut verified=None;
+     let mut last_garbage_board=None;
+     let mut garbage_matches=0;
      while verify_start.elapsed()<Duration::from_millis(cfg.verification_timeout_ms) {
       keyboard.check()?;
       let f=capture::capture(board_capture_rect,frame.sequence+3)?;
@@ -562,12 +564,31 @@ impl Runtime {
        verified=Some(o);
        break;
       }
-      // A transient animation is not the next verified piece. Preserve the
-      // pre-drop reference so the next actual spawn can be distinguished from
-      // the four cells that just locked.
+      // A precisely shifted board can be the expected placement plus
+      // bottom-injected garbage. Accept only after two stable observations.
+      if cfg.multiplayer_attack_mode
+          && o.confidence>=0.9 && o.active.is_some()
+          && let Ok(actual)=Board::from_visible(&o.cells,baseline)
+          && let Some(lines)=garbage_rise_lines(&chosen.expected,&actual)
+      {
+       if last_garbage_board==Some(actual) {
+        garbage_matches+=1;
+       } else {
+        garbage_matches=1;
+        last_garbage_board=Some(actual);
+       }
+       if garbage_matches>=2 {
+        garbage_lines=lines;
+        verified=Some(o);
+        break;
+       }
+      } else {
+       garbage_matches=0;
+       last_garbage_board=None;
+      }
+      // Transient effects are not an accepted next piece; keep pre-drop
+      // history so the actual next spawn can be distinguished.
       verifier.seed(&trusted);
-      // Capturing the board already takes measurable time; a shorter poll
-      // avoids idling for another full 60fps frame on every verified lock.
       std::thread::sleep(Duration::from_millis(8));
      }
      let observation=verified.with_context(||format!(
@@ -578,7 +599,11 @@ impl Runtime {
      ))?;
      // The real game state is reconstructed from the next captured piece.
      client.as_mut().context("engine disappeared before stop")?.stop()?;
-     let _=etx.send(Event::Completed {observation,input_ms,verify_ms:verify_start.elapsed().as_secs_f64()*1000.});Ok(())
+     let _=etx.send(Event::Completed {
+         observation,input_ms,
+         verify_ms:verify_start.elapsed().as_secs_f64()*1000.,
+         garbage_lines,
+     });Ok(())
     })();
     if let Err(e)=outcome {
      let error=format!("{e:#}");
@@ -608,6 +633,8 @@ impl Runtime {
         "placement":placement,"planned_actions":actions,
         "completed_actions":completed_actions,"last_action":last_action,
         "post_lock":lock_diagnostics.report(),
+        "multiplayer_attack_mode":cfg.multiplayer_attack_mode,
+        "recognized_garbage_lines":garbage_lines,
         "configured_controls": {
             "input_method":cfg.controls.input_method,
             "left":cfg.controls.left,
