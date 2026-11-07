@@ -427,3 +427,23 @@ fn multiplayer_narrow_garbage_column_remains_a_legal_open_hole() {
     assert_eq!(solved.lock(vertical).unwrap(),4,
         "four rows become complete only after a real piece fills the hole");
 }
+
+#[test]
+fn no_t_spin_configuration_is_optional_persistent_and_disabled_by_default() {
+    let mut config=gui::Config::default();
+    assert!(!config.no_t_spin);
+    let shipped=gui::Config::load(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../config/default.toml")
+    ).unwrap();
+    assert!(!shipped.no_t_spin);
+    config.no_t_spin=true;
+    let encoded=toml::to_string_pretty(&config).unwrap();
+    assert!(encoded.contains("no_t_spin = true"));
+    let decoded:gui::Config=toml::from_str(&encoded).unwrap();
+    assert!(decoded.no_t_spin);
+    // Existing profiles predate this field and must continue to load.
+    let legacy=encoded.replace("no_t_spin = true\n","");
+    let old:gui::Config=toml::from_str(&legacy).unwrap();
+    assert!(!old.no_t_spin);
+}
