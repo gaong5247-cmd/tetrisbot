@@ -157,3 +157,35 @@ fn visual_feedback_time_counts_toward_t_spin_gravity_budget() {
     impossible.gravity_ms = 60;
     assert!(impossible.validate().is_err(), "a slow visual loop cannot be modeled as faster than gravity");
 }
+
+
+#[test]
+fn instant_hard_drop_uses_no_ghost_position_and_no_soft_drop_on_open_board() {
+    let snapshot = state(Piece::S);
+    let target = Placement {
+        location: snapshot.board.dropped(snapshot.active),
+        spin: Spin::None,
+    };
+    let path = plan(&snapshot, target, &MovementProfile::default()).unwrap();
+    assert_eq!(path.actions, vec![Action::HardDrop]);
+    assert_eq!(path.expected.rows.iter().map(|r|r.count_ones()).sum::<u32>(),4);
+
+    // Changing which ghost marker the UI draws never enters the planner.
+    // The actual target is Cold Clear 2's grounded placement, not a pixel.
+    for piece in PIECES {
+        for rotation in ROTATIONS {
+            let snapshot = state(piece);
+            let seed = Location { rotation, x: 4, ..snapshot.active };
+            if snapshot.board.collides(seed) { continue; }
+            let desired = Placement {
+                location: snapshot.board.dropped(seed),
+                spin: Spin::None,
+            };
+            let path = plan(&snapshot, desired, &MovementProfile::default()).unwrap();
+            assert_eq!(path.actions.last(), Some(&Action::HardDrop));
+            assert!(!path.actions.contains(&Action::Down),
+                "open-board {:?}/{:?} should rotate and hard drop without waiting",
+                piece,rotation);
+        }
+    }
+}

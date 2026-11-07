@@ -26,6 +26,28 @@ fn sample(f: &Frame, cx: f32, cy: f32, cw: f32, ch: f32) -> ([u8; 3], f32) {
     let spread = v.iter().map(|&p| contrast(p, median)).sum::<f32>() / 9.;
     (median, spread)
 }
+/// Hollow ghost silhouettes often use a nearly background-colored center with
+/// brighter rims. Detect *geometry*, not an RGB/gray palette or PNG template.
+/// This is a candidate only: we later require exact agreement with the active
+/// piece's computed landing before classifying it as Ghost.
+fn hollow_ghost_candidate(f: &Frame, cx: f32, cy: f32, cw: f32, ch: f32, bg: [u8; 3]) -> bool {
+    let center = contrast(f.pixel(cx.round() as i32, cy.round() as i32), bg);
+    let rim = [(-0.30, 0.0), (0.30, 0.0), (0.0, -0.30), (0.0, 0.30)];
+    rim.iter()
+        .filter(|&&(dx, dy)| {
+            let value = contrast(
+                f.pixel(
+                    (cx + dx * cw).round() as i32,
+                    (cy + dy * ch).round() as i32,
+                ),
+                bg,
+            );
+            value > 22.0 && value > center + 18.0
+        })
+        .count()
+        >= 3
+}
+
 impl Vision {
     /// Carry trusted temporal evidence across the vision/engine worker boundary.
     /// This is an observed state, not an inferred spawn position.
@@ -60,6 +82,7 @@ impl Vision {
         let mut o = Observation::default();
         let mut raw = [[false; 10]; 20];
         let mut outlines = [[false; 10]; 20];
+        let mut hollow = [[false; 10]; 20];
         for y in 0..20 {
             for x in 0..10 {
                 let (color, spread) = features[y * 10 + x];
@@ -77,9 +100,16 @@ impl Vision {
                         outline += 1;
                     }
                 }
-                raw[y][x] = d > 24. && spread < 25.;
+                let cx = g.x + (x as f32 + 0.5) * g.cw;
+                let cy = g.y + (y as f32 + 0.5) * g.ch;
+                hollow[y][x] = hollow_ghost_candidate(f, cx, cy, g.cw, g.ch, bg);
+                // Ghost pixels must not become locked terrain, nor be mistaken
+                // for an active tetromino in connected-component matching.
+                raw[y][x] = d > 24. && spread < 25. && !hollow[y][x];
                 outlines[y][x] = d < 12. && outline >= 3;
-                let kind = if raw[y][x] {
+                let kind = if hollow[y][x] {
+                    CellKind::Uncertain
+                } else if raw[y][x] {
                     CellKind::Locked
                 } else if d < 10. && spread < 4. {
                     CellKind::Empty
@@ -206,7 +236,10 @@ impl Vision {
             }
             let landing = locked.dropped(loc);
             for (x, y) in landing.cells() {
-                if (0..20).contains(&y) && outlines[(19 - y) as usize][x as usize] {
+                if (0..20).contains(&y)
+                    && (outlines[(19 - y) as usize][x as usize]
+                        || hollow[(19 - y) as usize][x as usize])
+                {
                     o.cells[(19 - y) as usize][x as usize] = Cell {
                         kind: CellKind::Ghost,
                         confidence: 0.94,
@@ -217,10 +250,11 @@ impl Vision {
             o.reasons
                 .push("No unambiguous four-cell active silhouette".into());
         }
-        // Non-solid outlines away from a proven landing relationship remain unknown.
+        // Unexplained outlines or hollow cells may be decorated terrain or
+        // animations, so they remain uncertain instead of being erased blindly.
         for y in 0..20 {
             for x in 0..10 {
-                if outlines[y][x] && o.cells[y][x].kind != CellKind::Ghost {
+                if (outlines[y][x] || hollow[y][x]) && o.cells[y][x].kind != CellKind::Ghost {
                     o.cells[y][x].kind = CellKind::Uncertain;
                     o.cells[y][x].confidence = 0.3;
                 }

@@ -186,7 +186,13 @@ impl Keyboard {
         }
         result?;
         release?;
-        self.wait(p.gap_ms)
+        // The locked piece is verified on a fresh frame before another
+        // action is sent, so a second post-drop key gap only adds latency.
+        if a == Action::HardDrop {
+            Ok(())
+        } else {
+            self.wait(p.gap_ms)
+        }
     }
     pub fn release_all(&mut self) {
         for vk in self.pressed.drain(..) {

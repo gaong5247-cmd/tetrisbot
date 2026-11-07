@@ -162,6 +162,25 @@ struct Node {
 }
 pub fn plan(snapshot: &Snapshot, target: Placement, profile: &MovementProfile) -> Result<Plan> {
     profile.validate()?;
+    // Prefer positioning above the stack then hard-dropping immediately.
+    // The on-screen ghost marker is never used as a goal or collision source.
+    // A short, no-Down route avoids repeated soft drops and camera checks.
+    // Rotational tucks and T-spins must retain the full timed SRS planner.
+    if target.spin == Spin::None {
+        if let Ok(fast) = plan_search(snapshot, target, profile, false, 2_500) {
+            return Ok(fast);
+        }
+    }
+    plan_search(snapshot, target, profile, true, profile.max_nodes)
+}
+
+fn plan_search(
+    snapshot: &Snapshot,
+    target: Placement,
+    profile: &MovementProfile,
+    allow_soft_drop: bool,
+    node_limit: usize,
+) -> Result<Plan> {
     let hold = snapshot.needs_hold(target.location.piece)?;
     let board = &snapshot.board;
     if board.collides(target.location) || board.dropped(target.location) != target.location {
@@ -183,10 +202,11 @@ pub fn plan(snapshot: &Snapshot, target: Placement, profile: &MovementProfile) -
     };
     let mut queue = VecDeque::from([root]);
     let mut parents: HashMap<Node, Option<(Node, Action)>> = HashMap::from([(root, None)]);
+    let mut depths: HashMap<Node, u8> = HashMap::from([(root, 0)]);
     let mut expanded = 0;
     while let Some(n) = queue.pop_front() {
         expanded += 1;
-        if expanded > profile.max_nodes {
+        if expanded > node_limit {
             bail!("planner node budget exhausted")
         }
         let dropped = board.dropped(n.p);
@@ -214,6 +234,12 @@ pub fn plan(snapshot: &Snapshot, target: Placement, profile: &MovementProfile) -
                 duration_ms,
             });
         }
+        let depth = depths[&n];
+        // Keep the instant-drop fast path genuinely short. Otherwise, a
+        // no-Down search could stall for gravity with pointless rotations.
+        if !allow_soft_drop && depth >= 10 {
+            continue;
+        }
         for a in [
             Action::Left,
             Action::Right,
@@ -221,6 +247,9 @@ pub fn plan(snapshot: &Snapshot, target: Placement, profile: &MovementProfile) -
             Action::Ccw,
             Action::Down,
         ] {
+            if !allow_soft_drop && a == Action::Down {
+                continue;
+            }
             let Some((mut p, mut s)) = apply(board, n.p, a) else {
                 continue;
             };
@@ -250,6 +279,7 @@ pub fn plan(snapshot: &Snapshot, target: Placement, profile: &MovementProfile) -
             };
             if let std::collections::hash_map::Entry::Vacant(e) = parents.entry(next) {
                 e.insert(Some((n, a)));
+                depths.insert(next, depth.saturating_add(1));
                 queue.push_back(next);
             }
         }
