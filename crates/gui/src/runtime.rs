@@ -6,6 +6,7 @@ use detection::{Grid, State, Tracker, scan};
 use game_state::*;
 use input::{Cancellation, Keyboard, StopReason};
 use movement::{Action, plan};
+use std::path::Path;
 use std::{
     sync::{
         Arc, Mutex,
@@ -72,6 +73,90 @@ pub fn validate_input_target(title: &str, allow_external: bool) -> Result<()> {
         bail!("external Tetris input disabled; set allow_external = true in the game profile");
     }
     Ok(())
+}
+/// The solver has not emitted any key yet. A stale/failed Cold Clear 2
+/// child can be replaced once without risking a double hard-drop.
+pub fn suggest_current_with_restart(
+    client: &mut Option<tbp_client::Client>,
+    engine_path: &Path,
+    timeout: Duration,
+    snapshot: &Snapshot,
+) -> Result<(Vec<Placement>, bool)> {
+    let mut restarted = false;
+    for attempt in 0..2 {
+        if client.is_none() {
+            *client = Some(tbp_client::Client::spawn(engine_path, timeout)?);
+        }
+        let result = client.as_mut().unwrap()
+            .resync_with_mode(snapshot, true)
+            .and_then(|_| client.as_mut().unwrap().suggest());
+        match result {
+            Ok(moves) => return Ok((moves, restarted)),
+            Err(error) if attempt == 0 => {
+                // Drop kills/reaps the old process. No inputs were sent, so
+                // restarting is safe; the caller still verifies the live board.
+                *client = None;
+                restarted = true;
+                let _ = error;
+            }
+            Err(error) => {
+                *client = None;
+                return Err(error).context("Cold Clear 2 failed after one clean process restart");
+            }
+        }
+    }
+    bail!("Cold Clear 2 search exhausted its retry budget")
+}
+
+/// A timeout should explain *which* observation failed; never assume that
+/// SendInput succeeded just because the OS accepted the event.
+#[derive(Default)]
+pub struct LockDiagnostics {
+    frames: u32,
+    passed: u32,
+    confidence: f32,
+    active: Option<Location>,
+    uncertain_cells: usize,
+    board_difference_cells: Option<u32>,
+    classification: &'static str,
+}
+impl LockDiagnostics {
+    pub fn observe(&mut self, observation: &Observation, expected: &Board) -> bool {
+        self.frames += 1;
+        self.confidence = observation.confidence;
+        self.active = observation.active;
+        self.uncertain_cells = observation.cells.iter().flatten()
+            .filter(|c| c.kind == CellKind::Uncertain).count();
+        self.board_difference_cells = Board::from_visible(&observation.cells, true)
+            .ok()
+            .map(|board| board.rows.iter().zip(expected.rows.iter())
+                .map(|(a,b)| (a^b).count_ones()).sum());
+        self.classification = if self.uncertain_cells > 0 {
+            "uncertain_board_or_animation"
+        } else if self.board_difference_cells.is_some_and(|n| n > 0) {
+            "board_mismatch_or_hard_drop_not_received"
+        } else if observation.active.is_none() {
+            "next_active_not_visible"
+        } else if observation.confidence < 0.9 {
+            "low_vision_confidence"
+        } else {
+            "verified"
+        };
+        let verified = self.classification == "verified";
+        if verified { self.passed += 1; } else { self.passed = 0; }
+        self.passed >= 2
+    }
+    pub fn report(&self) -> serde_json::Value {
+        serde_json::json!({
+            "classification": self.classification,
+            "frames_observed": self.frames,
+            "consecutive_verified_frames": self.passed,
+            "confidence": self.confidence,
+            "active": self.active,
+            "uncertain_cells": self.uncertain_cells,
+            "board_difference_cells": self.board_difference_cells,
+        })
+    }
 }
 pub struct Runtime {
     pub views: Receiver<Result<View>>,
@@ -290,19 +375,24 @@ impl Runtime {
     // Once the hard-drop key could have been delivered, a failure is no
     // longer reversible and must never be automatically retried.
     let mut hard_drop_sent=false;
+    let mut lock_diagnostics = LockDiagnostics::default();
     let outcome=(||->Result<()> {
      let initial=PlanningSnapshot::from_observation(&observation,baseline)?;
      let snapshot=initial.snapshot;
      // CC2 always receives only the current piece; the simulated reserve is
      // never a real HOLD action. No future-piece HUD data is observed.
      let _=etx.send(Event::Status("Cold Clear 2 (current piece only; no NEXT/HOLD scan)".into()));
-     if client.is_none(){let c=tbp_client::Client::spawn(&cfg.engine_path,Duration::from_millis(cfg.engine_timeout_ms))?;let _=etx.send(Event::Status(c.info.clone()));client=Some(c);}
-     let c=client.as_mut().unwrap();
-     // A new CC2 search is required every turn because no NEXT or HOLD
-     // information is retained or extrapolated from previous placements.
-     c.resync_with_mode(&snapshot,true)?;
+     // Searching occurs before SendInput. If the child fails or stalls,
+     // restart it once rather than aborting the entire autoplay session.
+     phase="engine suggestion";
      recovery_snapshot=Some(snapshot.clone());
-     let start=Instant::now();let moves=c.suggest()?;let elapsed=start.elapsed().as_secs_f64()*1000.;let _=etx.send(Event::Suggestion(moves.clone(),elapsed));
+     let start=Instant::now();
+     let (moves, restarted)=suggest_current_with_restart(
+         &mut client, &cfg.engine_path,
+         Duration::from_millis(cfg.engine_timeout_ms), &snapshot)?;
+     let elapsed=start.elapsed().as_secs_f64()*1000.;
+     if restarted {let _=etx.send(Event::Status("Cold Clear 2 search recovered by restarting engine".into()));}
+     let _=etx.send(Event::Suggestion(moves.clone(),elapsed));
      if !execute{let _=etx.send(Event::PreviewDone);return Ok(())}
      phase="bind target";
      if let Some(reason)=cancel.reason() {bail!("AI canceled: {reason}")}
@@ -342,6 +432,7 @@ impl Runtime {
        let f=capture::capture(frame.rect,frame.sequence+2)?;let o=vision.observe(&f,grid);
        let b=Board::from_visible(&o.cells,baseline).with_context(||format!("pre-drop uncertain at {:?}; active {:?}",o.cells.iter().enumerate().flat_map(|(y,row)|row.iter().enumerate().filter_map(move |(x,c)|(c.kind==CellKind::Uncertain).then_some((x,y)))).collect::<Vec<_>>(),o.active))?;let active=o.active.context("lost active piece before hard drop")?;
        if o.confidence<0.9||b!=snapshot.board||!b.dropped(active).same_cells(chosen.placement.location) {bail!("pre-drop visual checkpoint disagrees with plan")}
+       trusted=o;
       }
       if a == Action::HardDrop {hard_drop_sent=true;}
       keyboard.pulse(a,&cfg.movement)?;
@@ -350,7 +441,7 @@ impl Runtime {
        // A single ghost/stack-contact animation frame is not proof that a
        // T-spin failed. Reobserve briefly, but do not send the next key until
        // the active piece and unchanged locked stack are both verified.
-       let deadline=Instant::now()+Duration::from_millis(120);
+       let deadline=Instant::now()+Duration::from_millis(220);
        loop {
         keyboard.check()?;
         let step_frame=capture::capture(frame.rect,frame.sequence+2)?;
@@ -358,13 +449,26 @@ impl Runtime {
         let verified=step_observation.confidence>=0.9
             && step_observation.active.is_some()
             && Board::from_visible(&step_observation.cells,baseline).is_ok_and(|b| b==snapshot.board);
-        if verified {
+        // For horizontal moves the active piece's x must actually change.
+        // Merely seeing an active tetromino again does NOT prove that the game
+        // accepted SendInput; otherwise bot keeps moving on a stale model.
+        let movement_accepted=match (trusted.active,step_observation.active,a) {
+            (Some(before),Some(after),Action::Left) => after.piece==before.piece && after.x==before.x-1,
+            (Some(before),Some(after),Action::Right) => after.piece==before.piece && after.x==before.x+1,
+            (Some(before),Some(after),Action::Down) => after.piece==before.piece && after.y<before.y,
+            _=>true,
+        };
+        if verified && movement_accepted {
             trusted=step_observation;
             break;
         }
         // Do not contaminate temporal tracking with an untrusted frame.
         vision.seed(&trusted);
         if Instant::now()>=deadline {
+            if matches!(a,Action::Left|Action::Right|Action::Down) {
+                phase="input delivery";
+                bail!("game did not confirm {a:?} movement within 220ms; check keyboard binding, Scan Code/Virtual Key mode and game focus");
+            }
             bail!("temporary visual desync after {a:?}; safe path recovery requested");
         }
         std::thread::sleep(Duration::from_millis(8));
@@ -372,19 +476,33 @@ impl Runtime {
       }
      }
      phase="verify lock";
-     let input_ms=start.elapsed().as_secs_f64()*1000.;let verify_start=Instant::now();let mut verifier=vision::Vision::default();let mut verified=None;let mut matches=0;
+     let input_ms=start.elapsed().as_secs_f64()*1000.;
+     let verify_start=Instant::now();
+     let mut verifier=vision::Vision::default();
+     verifier.seed(&trusted); // keep pre-drop history through spawn/line-clear animation
+     let mut verified=None;
      while verify_start.elapsed()<Duration::from_millis(cfg.verification_timeout_ms) {
-      keyboard.check()?;let f=capture::capture(frame.rect,frame.sequence+3)?;let mut o=verifier.observe(&f,grid);
-      // Verify the actual locked board and that a new active shape is present.
-      // Next/HOLD HUD are neither captured nor consulted.
-      let queue_ok=o.active.is_some();
-      if o.confidence>=0.9&&queue_ok&&Board::from_visible(&o.cells,baseline).is_ok_and(|b|b==chosen.expected) {matches+=1;if matches>=2 {verified=Some(o);break}}else{matches=0;}
+      keyboard.check()?;
+      let f=capture::capture(frame.rect,frame.sequence+3)?;
+      let o=verifier.observe(&f,grid);
+      if lock_diagnostics.observe(&o,&chosen.expected) {
+       verified=Some(o);
+       break;
+      }
+      // A transient animation is not the next verified piece. Preserve the
+      // pre-drop reference so the next actual spawn can be distinguished from
+      // the four cells that just locked.
+      verifier.seed(&trusted);
       std::thread::sleep(Duration::from_millis(16));
      }
-     let observation=verified.context("post-lock board/current-piece verification timed out")?;
-     // Dispose of the synthetic CC2 reserve before the next turn; the real
-     // game state is reconstructed from the next captured current piece.
-     c.stop()?;
+     let observation=verified.with_context(||format!(
+         "post-lock board/current-piece verification timed out: {} ({} frames; board_delta={:?}; confidence={:.2}; active={:?}; uncertain={})",
+         lock_diagnostics.classification, lock_diagnostics.frames,
+         lock_diagnostics.board_difference_cells, lock_diagnostics.confidence,
+         lock_diagnostics.active, lock_diagnostics.uncertain_cells
+     ))?;
+     // The real game state is reconstructed from the next captured piece.
+     client.as_mut().context("engine disappeared before stop")?.stop()?;
      let _=etx.send(Event::Completed {observation,input_ms,verify_ms:verify_start.elapsed().as_secs_f64()*1000.});Ok(())
     })();
     if let Err(e)=outcome {
@@ -409,7 +527,23 @@ impl Runtime {
        continue;
       }
      }
-     let report=serde_json::json!({"error":error,"phase":phase,"cancel_reason":cancel.reason().map(|r|r.to_string()),"target_window":bound_target,"foreground_window":input::foreground(),"placement":placement,"planned_actions":actions,"completed_actions":completed_actions,"last_action":last_action});
+     let report=serde_json::json!({
+        "error":error,"phase":phase,"cancel_reason":cancel.reason().map(|r|r.to_string()),
+        "target_window":bound_target,"foreground_window":input::foreground(),
+        "placement":placement,"planned_actions":actions,
+        "completed_actions":completed_actions,"last_action":last_action,
+        "post_lock":lock_diagnostics.report(),
+        "configured_controls": {
+            "input_method":cfg.controls.input_method,
+            "left":cfg.controls.left,
+            "right":cfg.controls.right,
+            "cw":cfg.controls.cw,
+            "ccw":cfg.controls.ccw,
+            "hard_drop":cfg.controls.hard_drop,
+            "pulse_ms":cfg.movement.pulse_ms,
+            "hard_drop_ms":cfg.movement.hard_drop_ms,
+        }
+     });
      if std::fs::create_dir_all("logs").is_ok(){if let Ok(json)=serde_json::to_string_pretty(&report){let _=std::fs::write("logs/last-error.json",json);}}
      cancel.stop();if let Some(c)=client.as_mut(){if c.stop().is_err(){client=None;}}let _=etx.send(Event::Failed(error));
     }

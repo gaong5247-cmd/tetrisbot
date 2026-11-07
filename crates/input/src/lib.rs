@@ -70,11 +70,21 @@ pub fn key(a: Action) -> u16 {
         Action::Hold => 0x43,
     }
 }
+/// Input styles used by different Windows games: virtual-key events or
+/// hardware-style scan code events (which still pass through SendInput).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputMethod { VirtualKey, ScanCode }
+impl Default for InputMethod {
+    fn default() -> Self { Self::ScanCode }
+}
+
 /// Configurable key bindings for different Tetris games. The names are
 /// converted to Windows virtual-key codes at startup, not per keypress.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KeyBindings {
+    pub input_method: InputMethod,
     pub left: String,
     pub right: String,
     pub cw: String,
@@ -88,6 +98,7 @@ pub struct KeyBindings {
 impl Default for KeyBindings {
     fn default() -> Self {
         Self {
+            input_method: InputMethod::ScanCode,
             left: "Left".into(),
             right: "Right".into(),
             cw: "X".into(),
@@ -201,12 +212,27 @@ mod platform {
             }
         }
     }
-    pub fn send(vk: u16, up: bool) -> Result<()> {
+    fn requires_extended_key(vk: u16) -> bool {
+        matches!(vk, 0x21..=0x28 | 0x2D | 0x2E | 0xA3 | 0xA5)
+    }
+    pub fn send(vk: u16, up: bool, method: InputMethod) -> Result<()> {
         let mut event: INPUT = unsafe { std::mem::zeroed() };
         event.r#type = INPUT_KEYBOARD;
+        let (scan, flags) = match method {
+            InputMethod::VirtualKey => (0, 0),
+            InputMethod::ScanCode => {
+                let scan = unsafe { MapVirtualKeyW(vk as u32, 0) };
+                if scan == 0 {
+                    bail!("no Windows scancode mapping for virtual key 0x{vk:02X}")
+                }
+                (scan as u16,
+                 KEYEVENTF_SCANCODE | if requires_extended_key(vk) { KEYEVENTF_EXTENDEDKEY } else { 0 })
+            }
+        };
         event.Anonymous.ki = KEYBDINPUT {
-            wVk: vk,
-            dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
+            wVk: if method == InputMethod::ScanCode { 0 } else { vk },
+            wScan: scan,
+            dwFlags: flags | if up { KEYEVENTF_KEYUP } else { 0 },
             ..Default::default()
         };
         if unsafe { SendInput(1, &event, std::mem::size_of::<INPUT>() as i32) } != 1 {
@@ -236,7 +262,7 @@ pub fn title(_: isize) -> String {
 #[cfg(not(windows))]
 pub fn exclude_debugger() {}
 #[cfg(not(windows))]
-fn send(_: u16, _: bool) -> Result<()> {
+fn send(_: u16, _: bool, _: InputMethod) -> Result<()> {
     bail!("SendInput requires Windows")
 }
 pub struct Keyboard {
@@ -244,6 +270,7 @@ pub struct Keyboard {
     pub cancel: Cancellation,
     pub target: isize,
     key_codes: [u16; 7],
+    input_method: InputMethod,
 }
 impl Keyboard {
     pub fn new(cancel: Cancellation, target: isize) -> Self {
@@ -254,6 +281,7 @@ impl Keyboard {
                 key(Action::Left), key(Action::Right), key(Action::Cw),
                 key(Action::Ccw), key(Action::Down), key(Action::HardDrop), 0
             ],
+            input_method: InputMethod::ScanCode,
         }
     }
     pub fn with_bindings(cancel: Cancellation, target: isize, bindings: KeyBindings) -> Result<Self> {
@@ -265,7 +293,7 @@ impl Keyboard {
         ].into_iter().enumerate() {
             key_codes[idx] = bindings.key(action)?;
         }
-        Ok(Self { pressed: vec![], cancel, target, key_codes })
+        Ok(Self { pressed: vec![], cancel, target, key_codes, input_method: bindings.input_method })
     }
     pub fn check(&self) -> Result<()> {
         if let Some(reason) = self.cancel.reason() {
@@ -302,10 +330,11 @@ impl Keyboard {
         // Virtual keys were validated and resolved when the worker started.
         // Avoid allocating/parsing Strings on the hot input path.
         let vk = self.key_codes[a as usize];
-        send(vk, false)?;
+        send(vk, false, self.input_method)?;
         self.pressed.push(vk);
-        let result = self.wait(p.pulse_ms);
-        let release = send(vk, true);
+        let hold_ms = if a == Action::HardDrop { p.hard_drop_ms } else { p.pulse_ms };
+        let result = self.wait(hold_ms);
+        let release = send(vk, true, self.input_method);
         if release.is_ok() {
             self.pressed.retain(|&k| k != vk);
         }
@@ -321,7 +350,7 @@ impl Keyboard {
     }
     pub fn release_all(&mut self) {
         for vk in self.pressed.drain(..) {
-            let _ = send(vk, true);
+            let _ = send(vk, true, self.input_method);
         }
     }
 }

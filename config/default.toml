@@ -1,13 +1,15 @@
 monitor = 0
 capture_hz = 60
 engine_path = "engines/cold-clear-2.exe"
-engine_timeout_ms = 3000
-verification_timeout_ms = 1500
+engine_timeout_ms = 4500
+verification_timeout_ms = 3500
 allow_external = true
 # External games are allowed only after Start AI; target window must be foreground.
 
 # Edit these to match your game's Settings -> Controls.
 [controls]
+# scancode (default) resembles physical key events; switch to virtual_key if a game ignores it.
+input_method = "scan_code"
 left = "Left"
 right = "Right"
 cw = "X"
@@ -29,7 +31,9 @@ edge_threshold = 8
 rescan_ms = 700
 
 [movement]
-pulse_ms = 18
+pulse_ms = 42
+# Hard drop gets a longer hold so polling-based games don't miss it.
+hard_drop_ms = 65
 gap_ms = 22
 # estimated time spent capturing/verifying after each input (ms)
 feedback_ms = 30

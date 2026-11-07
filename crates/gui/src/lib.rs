@@ -31,8 +31,8 @@ impl Default for Config {
             monitor: 0,
             capture_hz: 60,
             engine_path: PathBuf::from("engines/cold-clear-2.exe"),
-            engine_timeout_ms: 3000,
-            verification_timeout_ms: 1500,
+            engine_timeout_ms: 4500,
+            verification_timeout_ms: 3500,
             allow_external: true,
             controls: input::KeyBindings::default(),
             detection: DetectionConfig::default(),
@@ -277,6 +277,13 @@ impl Debugger {
             || v.observation.confidence < 0.9
             || v.frame.at.elapsed() > Duration::from_millis(250)
         {
+            if self.armed {
+                self.status = format!(
+                    "AI waiting: board={} | confidence={:.2} | frame_age={}ms | active={:?}",
+                    v.state, v.observation.confidence,
+                    v.frame.at.elapsed().as_millis(), v.observation.active
+                );
+            }
             return;
         }
         let Some(g) = v.grid else { return };
@@ -306,7 +313,10 @@ impl Debugger {
             let r = g.rect();
             let target = input::window_at(r.x + r.width as i32 / 2, r.y + r.height as i32 / 2);
             if target != input::foreground() {
-                self.status = "AI armed: focus the detected game window".into();
+                self.status = format!(
+                    "AI waiting for game focus: target={:?} (hwnd={}) / foreground={:?}",
+                    input::title(target), target, input::title(input::foreground())
+                );
                 return;
             }
             if self.runtime.cancel.stopped() {
@@ -604,6 +614,16 @@ impl eframe::App for Debugger {
                 .default_open(false)
                 .show(ui, |ui| {
                     ui.label("Set these to the keys used by the detected game (not its block colors).");
+                    ui.horizontal(|ui| {
+                        ui.label("Keyboard input:");
+                        changed_profile |= ui
+                            .selectable_value(&mut self.cfg.controls.input_method, input::InputMethod::ScanCode, "Scan Code")
+                            .changed();
+                        changed_profile |= ui
+                            .selectable_value(&mut self.cfg.controls.input_method, input::InputMethod::VirtualKey, "Virtual Key")
+                            .changed();
+                    });
+                    ui.small("Scan Code is the default. If movement is ignored, try Virtual Key then Apply Game Profile.");
                     egui::Grid::new("game-keymap").num_columns(2).show(ui, |ui| {
                         for (label, value) in [
                             ("Left", &mut self.cfg.controls.left),

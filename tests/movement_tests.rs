@@ -149,10 +149,10 @@ fn blocked_spawn_and_spin_do_not_succeed_by_faking_path() {
 #[test]
 fn visual_feedback_time_counts_toward_t_spin_gravity_budget() {
     let profile = MovementProfile::default();
-    assert_eq!(profile.step_ms(), 70);
+    assert_eq!(profile.step_ms(), 94);
     let mut no_vision = profile.clone();
     no_vision.feedback_ms = 0;
-    assert_eq!(no_vision.step_ms(), 40);
+    assert_eq!(no_vision.step_ms(), 64);
     let mut impossible = profile;
     impossible.gravity_ms = 60;
     assert!(impossible.validate().is_err(), "a slow visual loop cannot be modeled as faster than gravity");

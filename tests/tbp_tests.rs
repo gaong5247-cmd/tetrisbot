@@ -105,3 +105,27 @@ fn actual_cold_clear_search_with_no_next_and_unknown_hold() {
     let moves2 = c.suggest().unwrap();
     assert!(moves2.iter().any(|m| m.location.piece == Piece::T));
 }
+
+
+#[test]
+fn external_engine_death_before_any_input_is_restarted_once() {
+    // A child that exits while between moves must not permanently disable
+    // autoplay; retrying before SendInput is safe. Do not retry a hard drop.
+    let mut observed = Observation::default();
+    observed.confidence = 1.0;
+    observed.active = Some(Location::spawn(Piece::T));
+    observed.cells = [[Cell {kind: CellKind::Empty,confidence:1.0};10];20];
+    let snapshot = PlanningSnapshot::from_observation(&observed,true).unwrap().snapshot;
+    let path = engine();
+    let timeout = Duration::from_secs(5);
+    let mut client = Some(Client::spawn(&path, timeout).unwrap());
+    client.as_mut().unwrap()
+        .send(&serde_json::json!({"type":"quit"})).unwrap();
+    // Wait for EOF before asking the worker to recover the crashed process.
+    assert!(client.as_ref().unwrap().receive().is_err());
+    let (moves, restarted) = gui::runtime::suggest_current_with_restart(
+        &mut client, &path, timeout, &snapshot
+    ).unwrap();
+    assert!(restarted);
+    assert!(moves.iter().any(|m| m.location.piece==Piece::T));
+}

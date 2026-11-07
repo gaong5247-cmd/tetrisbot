@@ -85,6 +85,29 @@
 
 키는 egui에서 수정한 뒤 **Apply Game Profile**을 누르세요. **Save Configuration**은 `config/local.toml`에 저장하므로, 다음 실행에 사용하려면 `--config config/local.toml`을 지정합니다.
 
+## Cold Clear 게임에서 이동·하드드롭이 안 되는 경우
+
+게임이 정상적으로 화면에 보이더라도, 컴퓨터에서 보낸 키보드 이벤트를 해당 게임이 받아들이는지는 별개의 문제입니다.
+
+1. egui의 **Game Keyboard Bindings**를 열고 게임의 실제 Left/Right/Rotate CW/Rotate CCW/Hard Drop/Soft Drop 키와 일치시키세요. Cold Clear의 일부 버전은 방향키·Z/X·Space를 사용하지만, 게임 안에서 조작이 재설정됐으면 그 설정을 따라야 합니다.
+2. **Keyboard input → Scan Code**를 선택하고 **Apply Game Profile**을 누르세요. 최신 기본값은 `scan_code`입니다. 게임이 입력을 무시하면 `Virtual Key`로 바꿔 다시 적용해 보세요.
+3. **Start AI**를 누른 뒤 반드시 테트리스 게임 창을 클릭해 전경에 두세요. egui가 Always on Top으로 게임 보드를 가리면 이동하거나 Always on Top을 끄세요.
+4. 최신 키 지속 시간은 일반 키 42ms, 하드드롭 65ms이며, 게임이 키를 인식하지 못하면 `input delivery` 단계에서 멈추고 메시지에 해당 키를 적습니다. 입력이 확인되지 않았는데 계속 움직이거나 하드드롭하지 않습니다.
+
+외부 게임이 OS의 합성 키 입력을 차단하거나 다른 입력 방식만 지원한다면 이 설정만으로 호환을 보장할 수 없습니다.
+
+## Roblox 테트리스에서 TBP/착수 후 검증 오류가 나는 경우
+
+- **`TBP suggestion deadline/stdout disconnected`**: 실제 Cold Clear 2 엔진이 응답하지 않았다는 의미입니다. 현재 블록 1개만 쓰는 모드에서 불필요한 7-bag 미래 추측 탐색을 끄고, 입력을 보내기 전 엔진을 **최대 1회** 재시작하도록 수정했습니다. 계속 실패하면 게임 조작 문제가 아니라 엔진 실행/성능 로그를 확인하세요.
+- **`post-lock board/current-piece verification timed out`**: 하드드롭 전송 이후 게임이 원하는 보드/새 블록 상태로 바뀐 것을 검사하지 못한 경우입니다. 타임아웃을 3.5초로 늘리고, 하드드롭 직전의 실제 블록 실루엣을 추적기에 남겨 새 스폰과 라인 클리어 효과를 구별하도록 했습니다.
+- **`board_mismatch_or_hard_drop_not_received`**: 보드가 예상한 모양이 아니거나 하드드롭 키가 게임에 전달되지 않았을 수 있습니다.
+- **`next_active_not_visible`**: 하드드롭 이후 새 활성 블록이 화면에 나타나지 않거나 인식기가 찾지 못했습니다.
+- **`uncertain_board_or_animation`**: 블록 셀, 투명 효과, 라인 클리어 애니메이션 등으로 판 인식이 불확실합니다.
+
+실패하면 실행 폴더의 **`logs/last-error.json`**에서 `phase`, `configured_controls`, `post_lock.classification`, `board_difference_cells`, `uncertain_cells`을 확인하세요. 오류 텍스트와 함께 이 파일을 제공하면 어떤 단계에서 멈췄는지 더 정확히 확인할 수 있습니다.
+
+Roblox 경험마다 키 설정·프레임레이트·입력 인터페이스·서버 지연이 다를 수 있습니다. 이 수정은 모든 Roblox 경험의 자동 플레이 성공을 보장하지 않으며, 게임이 허용하는 환경에서만 사용해야 합니다.
+
 ## 개발·테스트
 
 Rust stable (MSVC x64), C++ Build Tools, Windows SDK가 필요합니다.
