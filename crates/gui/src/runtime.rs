@@ -62,6 +62,18 @@ pub fn same_reversible_state(before: &Snapshot, after: &Snapshot) -> bool {
         && before.queue() == after.queue()
         && before.hold == after.hold
 }
+/// Accept any foreground Tetris game when the external-games option is enabled.
+/// Keep the debugger itself excluded so a board screenshot in the GUI can never
+/// receive input by mistake. All other vision, focus, and path checks still apply.
+pub fn validate_input_target(title: &str, allow_external: bool) -> Result<()> {
+    if title == "SilhouetteTetris Debugger" {
+        bail!("debugger window is not a playable target; move it away from the game board");
+    }
+    if !allow_external && title != crate::lab::TITLE {
+        bail!("external Tetris input disabled; set allow_external = true in the game profile");
+    }
+    Ok(())
+}
 pub struct Runtime {
     pub views: Receiver<Result<View>>,
     pub jobs: Sender<Job>,
@@ -292,8 +304,11 @@ impl Runtime {
      let rect=grid.rect();let target=input::window_at(rect.x+rect.width as i32/2,rect.y+rect.height as i32/2);
      bound_target=target;
      let title=input::title(target);
-     if !cfg.allow_external&&title!=crate::lab::TITLE {bail!("default compatibility profile permits only Local Lab; target is {title:?}")}
-     let mut keyboard=Keyboard::new(cancel.clone(),target);keyboard.check()?;
+     validate_input_target(&title,cfg.allow_external)?;
+     // Key bindings are selected by the user for this game, not hard-coded
+     // to Local Lab. Foreground and cancellation are still checked per key.
+     let mut keyboard=Keyboard::with_bindings(cancel.clone(),target,cfg.controls.clone());
+     keyboard.check()?;
      // Recapture after engine search: active gravity may have advanced since the request.
      let mut vision=vision::Vision::default();vision.seed(&observation);vision.observe(&frame,grid);
      let fresh=Arc::new(capture::capture(frame.rect,frame.sequence+1)?);let mut current=vision.observe(&fresh,grid);if empty_hold&&current.hold==Known::Unknown {current.hold=Known::Value(None);}
