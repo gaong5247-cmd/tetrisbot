@@ -154,3 +154,68 @@ fn line_clear_animation_is_uncertain() {
     let o = vision::Vision::default().observe(&f, g);
     assert!(o.confidence < 0.9 || o.cells[19].iter().any(|c| c.kind == CellKind::Uncertain));
 }
+
+
+/// The game may draw ghost cells as bright gray blocks with dark centers,
+/// unlike the thin outlined ghosts in Local Lab. They are UI hints, not terrain.
+#[test]
+fn filled_gray_hollow_ghost_does_not_block_immediate_drop() {
+    use capture::Rect;
+    for skin in 0..=1 {
+        for gray in [90u8, 170u8, 230u8] {
+            let mut lab = Lab::default();
+            lab.active = Location {
+                piece: Piece::S,
+                rotation: Rotation::North,
+                x: 4,
+                y: 12,
+            };
+            let (_, g) = fixture(1280, 720, (300, 90), 24, skin, true);
+            let mut frame = lab.frame(1280, 720, (300, 90), 24, skin, true);
+            // The majority of the 9-point inner samples are bright, with a
+            // small dark center: a naive cell classifier sees a solid block.
+            let landing = lab.board.dropped(lab.active);
+            for (x, y) in landing.cells() {
+                let left = g.x as i32 + x as i32 * 24;
+                let top = g.y as i32 + (19 - y) as i32 * 24;
+                frame.fill(
+                    Rect { x: left + 2, y: top + 2, width: 20, height: 20 },
+                    [gray, gray, gray, 255],
+                );
+                frame.fill(
+                    Rect { x: left + 9, y: top + 9, width: 6, height: 6 },
+                    [7, 9, 13, 255],
+                );
+            }
+            let observation = vision::Vision::default().observe(&frame, g);
+            assert_eq!(observation.active.unwrap().piece, Piece::S);
+            assert_eq!(
+                Board::from_visible(&observation.cells, true).unwrap(),
+                lab.board,
+                "skin={skin}, gray={gray}"
+            );
+            let count = observation.cells.iter().flatten()
+                .filter(|cell| cell.kind == CellKind::Ghost).count();
+            assert_eq!(count, 4, "gray ghost must be separate from locked cells");
+            assert!(observation.confidence >= 0.9);
+        }
+    }
+}
+
+#[test]
+fn actual_solid_locked_blocks_remain_occupied_next_to_ghost() {
+    let mut lab = Lab::default();
+    lab.board.rows[0] = (1 << 0) | (1 << 1);
+    lab.active = Location {
+        piece: Piece::S,
+        rotation: Rotation::North,
+        x: 4,
+        y: 12,
+    };
+    let (_, g) = fixture(1280, 720, (300, 90), 24, 0, true);
+    let frame = lab.frame(1280, 720, (300, 90), 24, 0, true);
+    let observed = vision::Vision::default().observe(&frame, g);
+    assert_eq!(Board::from_visible(&observed.cells, true).unwrap(), lab.board);
+    assert_eq!(observed.cells[19][0].kind, CellKind::Locked);
+    assert_eq!(observed.cells[19][1].kind, CellKind::Locked);
+}
