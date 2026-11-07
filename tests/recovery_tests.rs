@@ -233,7 +233,7 @@ fn shipped_external_profile_loads_and_keymap_is_resolved() {
 
 
 #[test]
-fn limited_planning_never_invents_next_or_issues_hold() {
+fn current_piece_only_mode_discards_next_and_hold_even_if_provided() {
     let empty = Cell { kind: CellKind::Empty, confidence: 1. };
     let mut o = Observation {
         cells: [[empty; 10]; 20],
@@ -243,36 +243,35 @@ fn limited_planning_never_invents_next_or_issues_hold() {
         hold: Known::Unknown,
         ..Default::default()
     };
-    assert!(Snapshot::from_observation(&o, true).is_err());
     let limited = PlanningSnapshot::from_observation(&o, true).unwrap();
     assert!(limited.restricted_no_hold);
     assert_eq!(limited.snapshot.queue(), vec![Piece::T]);
-    assert_eq!(limited.snapshot.hold, Some(Piece::T)); // simulated CC2 reserve
+    assert_eq!(limited.snapshot.hold, Some(Piece::T)); // internal synthetic reserve
+    assert_eq!(limited.snapshot.next.len(), 0);
     assert!(!limited.snapshot.needs_hold(Piece::T).unwrap());
     assert!(limited.snapshot.needs_hold(Piece::I).is_err());
 
-    // A partial NEXT is used only as observation, not filled with invented data.
-    o.next = vec![Piece::O];
-    let one = PlanningSnapshot::from_observation(&o, true).unwrap();
-    assert_eq!(one.snapshot.next, vec![Piece::O]);
-    assert!(one.restricted_no_hold);
+    // Even populated HUD fields must be completely discarded.
+    o.next = vec![Piece::O, Piece::L, Piece::J, Piece::Z];
+    o.hold = Known::Value(Some(Piece::I));
+    let still = PlanningSnapshot::from_observation(&o, true).unwrap();
+    assert!(still.restricted_no_hold);
+    assert_eq!(still.snapshot.queue(), vec![Piece::T]);
+    assert_eq!(still.snapshot.hold, Some(Piece::T));
+    assert!(still.snapshot.next.is_empty());
+    assert_eq!(
+        PlanningSnapshot::with_mode(&o, true, false).unwrap().snapshot.queue(),
+        vec![Piece::T],
+        "full-preview path must never be reachable through the vision planner"
+    );
 
-    // Once NEXT and HOLD are actually observed, normal high-information mode returns.
-    o.next = vec![Piece::O, Piece::L, Piece::J];
-    o.hold = Known::Value(None);
-    let normal = PlanningSnapshot::from_observation(&o, true).unwrap();
-    assert!(!normal.restricted_no_hold);
-    assert_eq!(normal.snapshot.hold, None);
-    assert_eq!(normal.snapshot.next.len(), 3);
-    let still_restricted = PlanningSnapshot::with_mode(&o, true, true).unwrap();
-    assert!(still_restricted.restricted_no_hold);
-    assert_eq!(still_restricted.snapshot.queue(), normal.snapshot.queue());
-
-    // Neither normal nor limited mode may guess an unobserved board.
+    // Current-piece-only is not permission to invent unobserved stacks.
     o.cells[19][4].kind = CellKind::Uncertain;
     assert!(PlanningSnapshot::from_observation(&o, true).is_err());
     o.cells[19][4] = empty;
     assert!(PlanningSnapshot::from_observation(&o, false).is_err());
+    o.confidence = 0.35;
+    assert!(PlanningSnapshot::from_observation(&o, true).is_err());
 }
 
 #[test]
