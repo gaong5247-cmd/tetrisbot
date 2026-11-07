@@ -640,14 +640,6 @@ impl eframe::App for Debugger {
                     });
                     ui.small("Examples: Left, Right, Up, Down, X, Z, Space, Shift, C. F10 stays reserved for emergency stop.");
                 });
-            if changed_profile {
-                self.profile_pending = true;
-                // Never keep sending keys under an old mapping after the user
-                // changes the game profile. Require explicit Apply and re-arm.
-                if self.armed || self.busy {
-                    self.stop("Game controls changed; apply profile before resuming AI");
-                }
-            }
             egui::CollapsingHeader::new("Placement Speed & Safety")
                 .default_open(false)
                 .show(ui, |ui| {
