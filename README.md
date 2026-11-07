@@ -68,7 +68,7 @@ GUI의 `Original`, `Grayscale`, `Edges`, `Heatmap`, `Occupancy`, `Silhouettes`, 
 - **하드드롭 전:** 잠긴 보드·현재 조각 종류와 NEXT·HOLD가 동일하다고 다시 확인되면 현재 위치에서 경로를 재계획합니다. **최대 3회**까지만 시도합니다.
 - **하드드롭 이후 / 예상치 못한 잠금:** 자동 재시작하지 않습니다. 화면 상태가 바뀐 상태에서 재입력하면 잘못된 블록을 잠글 수 있기 때문입니다.
 - **창 포커스 상실:** 게임 창을 다시 활성화하세요. 디버거 창이 보드를 가리면 위치를 바꾸거나 Always on Top을 끄세요.
-- **실패 원인:** 실행 폴더의 `logs/last-error.json`, `logs/headless-report.json` 및 GUI의 **Last verification error**를 확인하세요.
+- **실패 원인:** 실행 폴더의 `logs/last-error.json`, `logs/last-recovery.json`, `logs/headless-report.json` 및 GUI의 **Last verification error**를 확인하세요.
 
 실제 게임에서 같은 문제가 계속 나면 에러 로그와 재현 상황을 확인해야 합니다. 코드상 복구 경로를 추가한 것이 모든 T스핀의 성공을 보장하지는 않습니다.
 
