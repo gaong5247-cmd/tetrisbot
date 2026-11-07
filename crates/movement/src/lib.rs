@@ -18,6 +18,8 @@ pub enum Action {
 #[serde(default)]
 pub struct MovementProfile {
     pub pulse_ms: u32,
+    /// Keep hard-drop down across multiple game update frames.
+    pub hard_drop_ms: u32,
     pub gap_ms: u32,
     /// Estimated screen capture + visual verification time after each key.
     /// The planner must include this elapsed wall-clock time in gravity/lock budget.
@@ -33,7 +35,8 @@ pub struct MovementProfile {
 impl Default for MovementProfile {
     fn default() -> Self {
         Self {
-            pulse_ms: 18,
+            pulse_ms: 42,
+            hard_drop_ms: 65,
             gap_ms: 22,
             feedback_ms: 30,
             das_ms: 150,
@@ -51,6 +54,7 @@ impl MovementProfile {
         if !self.guideline_srs
             || !self.soft_drop_one_cell
             || self.pulse_ms == 0
+            || !(18..=250).contains(&self.hard_drop_ms)
             || self.pulse_ms >= self.das_ms
             || self.feedback_ms > 150
             || self.gravity_ms < self.step_ms()
