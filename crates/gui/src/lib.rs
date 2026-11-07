@@ -655,6 +655,8 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
     let rt = Runtime::start(cfg);
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let mut busy = false;
+    let mut recovery_guard: Option<(Snapshot, Instant)> = None;
+    let mut recovery_attempts = 0u8;
     let mut completed = 0;
     let mut capture = Timings::default();
     let mut vision = Timings::default();
@@ -676,6 +678,8 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
                     ..
                 } => {
                     completed += 1;
+                    recovery_guard = None;
+                    recovery_attempts = 0;
                     inputs.record(input_ms);
                     verify.record(verify_ms);
                     busy = false;
@@ -685,6 +689,16 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
                     search.record(ms);
                 }
                 Event::PreviewDone => busy = false,
+                Event::Recovering { reason, snapshot } => {
+                    busy = false;
+                    last.clear();
+                    recovery_attempts = recovery_attempts.saturating_add(1);
+                    if recovery_attempts > 3 {
+                        failures.push(format!("headless recovery budget exhausted: {reason}"));
+                    } else {
+                        recovery_guard = Some((snapshot, Instant::now()));
+                    }
+                }
                 Event::Failed(e) => {
                     failures.push(e);
                     busy = false;
@@ -726,8 +740,22 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
         if !allow_input || busy || !failures.is_empty() || v.state != State::Locked {
             continue;
         }
-        if Snapshot::from_observation(&v.observation, fresh).is_err() {
+        let Ok(observed) = Snapshot::from_observation(&v.observation, fresh) else {
             continue;
+        };
+        if let Some((expected, since)) = &recovery_guard {
+            if since.elapsed() > Duration::from_secs(3) {
+                failures.push("headless reversible path could not revalidate within 3s".into());
+                break;
+            }
+            if since.elapsed() < Duration::from_millis(120) {
+                continue;
+            }
+            if !runtime::same_reversible_state(expected, &observed) {
+                failures.push("headless board/queue/HOLD diverged before retry".into());
+                break;
+            }
+            recovery_guard = None;
         }
         let g = v.grid.unwrap();
         let r = g.rect();
