@@ -679,7 +679,7 @@ impl eframe::App for Debugger {
    ui.separator();ui.label(format!("Suggested: {:?}",self.moves.first()));ui.label(format!("Last verified move: {}",self.completed));
    for (name,t) in [("Capture",&self.capture),("Vision",&self.vision),("Search",&self.search),("Input",&self.input),("Verify",&self.verify)] {let r=t.report();ui.label(format!("{name}: {:.2} ms / p95 {:.2}",r.mean_ms,r.p95_ms));}
    ui.separator();ui.label(&self.status);if !self.error.is_empty(){ui.colored_label(Color32::LIGHT_RED,format!("Last verification error: {}",self.error));}
-   ui.separator();ui.small("Default input target: Local Lab only. F10 stops globally. Generic game compatibility and speed targets require measurement.");
+   ui.separator();ui.small(format!("External Tetris windows: {} | F10 emergency stop | Game keyboard profile must match",if self.cfg.allow_external {"ENABLED"}else{"DISABLED"}));
   });
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.columns(2, |cols| {
