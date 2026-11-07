@@ -184,3 +184,47 @@ fn reversible_t_spin_recovery_requires_same_board_queue_and_hold() {
     after.hold = None;
     assert!(!same_reversible_state(&before, &after), "HOLD changed");
 }
+
+
+#[test]
+fn any_foreground_tetris_window_allowed_with_external_profile() {
+    use gui::runtime::validate_input_target;
+    let config = gui::Config::default();
+    assert!(config.allow_external);
+    for title in ["Cold Clear (FPS: 59)", "TETR.IO", "Jstris", "Tetris.com", gui::lab::TITLE] {
+        assert!(validate_input_target(title, config.allow_external).is_ok(), "{title}");
+    }
+    assert!(validate_input_target("Cold Clear (FPS: 59)", false).is_err());
+    assert!(validate_input_target(gui::lab::TITLE, false).is_ok());
+    assert!(validate_input_target("SilhouetteTetris Debugger", true).is_err());
+}
+
+#[test]
+fn input_profiles_accept_common_keys_and_reject_unsafe_or_duplicate_bindings() {
+    use input::{KeyBindings, virtual_key};
+    assert_eq!(virtual_key("ArrowLeft").unwrap(), 0x25);
+    assert_eq!(virtual_key("Space").unwrap(), 0x20);
+    assert_eq!(virtual_key("Up").unwrap(), 0x26);
+    assert_eq!(virtual_key("Shift").unwrap(), 0x10);
+    assert_eq!(virtual_key("F10").unwrap(), 0x79);
+    assert!(virtual_key("UnrecognizedKeyName").is_err());
+    let mut keys = KeyBindings::default();
+    keys.validate().unwrap();
+    keys.cw = "Up".into();
+    keys.hold = "LeftShift".into();
+    keys.validate().unwrap();
+    keys.ccw = "F10".into();
+    assert!(keys.validate().is_err(), "reserved emergency key may never be mapped");
+    keys.ccw = "Left".into();
+    assert!(keys.validate().is_err(), "two actions should not share a key");
+}
+
+#[test]
+fn shipped_external_profile_loads_and_keymap_is_resolved() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/default.toml");
+    let config = gui::Config::load(&path).unwrap();
+    assert!(config.allow_external, "the bundled profile must permit external games");
+    assert_eq!(config.controls.key(movement::Action::HardDrop).unwrap(), 0x20);
+    assert_eq!(config.controls.key(movement::Action::Cw).unwrap(), 0x58);
+}

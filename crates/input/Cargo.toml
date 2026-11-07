@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 movement.workspace = true
 anyhow.workspace = true
+serde.workspace = true
 windows-sys.workspace = true

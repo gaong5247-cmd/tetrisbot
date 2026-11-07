@@ -21,6 +21,7 @@ pub struct Config {
     pub engine_timeout_ms: u64,
     pub verification_timeout_ms: u64,
     pub allow_external: bool,
+    pub controls: input::KeyBindings,
     pub detection: DetectionConfig,
     pub movement: MovementProfile,
 }
@@ -32,7 +33,8 @@ impl Default for Config {
             engine_path: PathBuf::from("engines/cold-clear-2.exe"),
             engine_timeout_ms: 3000,
             verification_timeout_ms: 1500,
-            allow_external: false,
+            allow_external: true,
+            controls: input::KeyBindings::default(),
             detection: DetectionConfig::default(),
             movement: MovementProfile::default(),
         }
@@ -44,6 +46,7 @@ impl Config {
             &std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?,
         )?;
         c.movement.validate()?;
+        c.controls.validate()?;
         if c.detection.stable_frames < 2
             || !(0.65..=1.).contains(&c.detection.lock_score)
             || c.engine_timeout_ms > 10000
@@ -88,6 +91,8 @@ pub struct Debugger {
     empty_hold: bool,
     debug: bool,
     always_on_top: bool,
+    /// Changed game controls are inactive until the worker is restarted.
+    profile_pending: bool,
     /// Expected unchanged stack/queue after a reversible, unfinished move.
     recovery: Option<(Snapshot, Instant)>,
     recovery_attempts: u8,
@@ -121,6 +126,7 @@ impl Debugger {
             empty_hold: false,
             debug: true,
             always_on_top: true,
+            profile_pending: false,
             recovery: None,
             recovery_attempts: 0,
             mode: Mode::Original,
@@ -150,6 +156,26 @@ impl Debugger {
         }
         let _ = self.runtime.jobs.try_send(Job::Reset);
         self.status = reason.into();
+    }
+    fn apply_game_profile(&mut self) {
+        if let Err(e) = self.cfg.controls.validate() {
+            self.error = format!("Invalid game controls: {e}");
+            return;
+        }
+        // Do not hot-swap key mappings while the input worker is armed.
+        self.stop("Game profile applied; confirm fresh game state before Start AI");
+        self.runtime = Runtime::start(self.cfg.clone());
+        self.last_generation = 0;
+        self.last_key.clear();
+        self.busy = false;
+        self.armed = false;
+        self.baseline = false;
+        self.empty_hold = false;
+        self.recovery_attempts = 0;
+        self.profile_pending = false;
+        self.view = None;
+        self.texture = None;
+        self.error.clear();
     }
     fn update_workers(&mut self) {
         while let Ok(v) = self.runtime.views.try_recv() {
@@ -514,7 +540,7 @@ impl eframe::App for Debugger {
                     self.preview = true;
                 }
                 if ui
-                    .add_enabled(self.baseline && !self.busy, egui::Button::new("Start AI"))
+                    .add_enabled(self.baseline && !self.busy && !self.profile_pending, egui::Button::new("Start AI"))
                     .clicked()
                 {
                     self.runtime.cancel.reset();
@@ -543,15 +569,19 @@ impl eframe::App for Debugger {
                     self.stop("Emergency stop; all owned keys released");
                 }
                 if ui.button("Save Configuration").clicked() {
-                    let save = std::fs::create_dir_all("config").and_then(|_| {
-                        std::fs::write(
-                            "config/local.toml",
-                            toml::to_string_pretty(&self.cfg).unwrap(),
-                        )
-                    });
-                    match save {
-                        Ok(()) => self.status = "Saved config/local.toml".into(),
-                        Err(e) => self.error = e.to_string(),
+                    if let Err(e) = self.cfg.controls.validate() {
+                        self.error = format!("Cannot save invalid key bindings: {e}");
+                    } else {
+                        let save = std::fs::create_dir_all("config").and_then(|_| {
+                            std::fs::write(
+                                "config/local.toml",
+                                toml::to_string_pretty(&self.cfg).unwrap(),
+                            )
+                        });
+                        match save {
+                            Ok(()) => self.status = "Saved config/local.toml".into(),
+                            Err(e) => self.error = e.to_string(),
+                        }
                     }
                 }
                 ui.checkbox(&mut self.debug, "Debug Mode");
@@ -565,6 +595,49 @@ impl eframe::App for Debugger {
                     ));
                 }
             });
+            let mut changed_profile = false;
+            let mut apply_profile = false;
+            ui.horizontal_wrapped(|ui| {
+                changed_profile |= ui.checkbox(&mut self.cfg.allow_external, "Allow external Tetris games").changed();
+                if ui.button("Apply Game Profile").clicked() {
+                    apply_profile = true;
+                }
+                if self.profile_pending {
+                    ui.colored_label(Color32::YELLOW, "Pending changes: click Apply before Start AI");
+                }
+            });
+            egui::CollapsingHeader::new("Game Keyboard Bindings")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label("Set these to the keys used by the detected game (not its block colors).");
+                    egui::Grid::new("game-keymap").num_columns(2).show(ui, |ui| {
+                        for (label, value) in [
+                            ("Left", &mut self.cfg.controls.left),
+                            ("Right", &mut self.cfg.controls.right),
+                            ("Rotate CW", &mut self.cfg.controls.cw),
+                            ("Rotate CCW", &mut self.cfg.controls.ccw),
+                            ("Soft Drop", &mut self.cfg.controls.down),
+                            ("Hard Drop", &mut self.cfg.controls.hard_drop),
+                            ("Hold", &mut self.cfg.controls.hold),
+                        ] {
+                            ui.label(label);
+                            changed_profile |= ui.text_edit_singleline(value).changed();
+                            ui.end_row();
+                        }
+                    });
+                    ui.small("Examples: Left, Right, Up, Down, X, Z, Space, Shift, C. F10 stays reserved for emergency stop.");
+                });
+            if changed_profile {
+                self.profile_pending = true;
+                // Never keep sending keys under an old mapping after the user
+                // changes the game profile. Require explicit Apply and re-arm.
+                if self.armed || self.busy {
+                    self.stop("Game controls changed; apply profile before resuming AI");
+                }
+            }
+            if apply_profile {
+                self.apply_game_profile();
+            }
             ui.horizontal(|ui| {
                 let before = self.baseline;
                 ui.checkbox(
@@ -611,7 +684,7 @@ impl eframe::App for Debugger {
    ui.separator();ui.label(format!("Suggested: {:?}",self.moves.first()));ui.label(format!("Last verified move: {}",self.completed));
    for (name,t) in [("Capture",&self.capture),("Vision",&self.vision),("Search",&self.search),("Input",&self.input),("Verify",&self.verify)] {let r=t.report();ui.label(format!("{name}: {:.2} ms / p95 {:.2}",r.mean_ms,r.p95_ms));}
    ui.separator();ui.label(&self.status);if !self.error.is_empty(){ui.colored_label(Color32::LIGHT_RED,format!("Last verification error: {}",self.error));}
-   ui.separator();ui.small("Default input target: Local Lab only. F10 stops globally. Generic game compatibility and speed targets require measurement.");
+   ui.separator();ui.small(format!("External Tetris windows: {} | F10 emergency stop | Game keyboard profile must match",if self.cfg.allow_external {"ENABLED"}else{"DISABLED"}));
   });
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.columns(2, |cols| {
