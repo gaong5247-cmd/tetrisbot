@@ -80,10 +80,10 @@ Rust stable x64 MSVC와 Visual Studio C++ Build Tools, Windows SDK가 필요합�
 cargo fmt --all --check
 cargo test --locked
 cargo build --release --locked
-cargo run --release -- --gui
+cargo run -p app --release --bin silhouette-tetris -- --gui
 ```
 
-빌드된 실행 파일은 보통 `target/release/SilhouetteTetris.exe`가 아닌 **`target/release/app.exe`**일 수 있으므로, 실제 Cargo 바이너리 이름은 `crates/app/Cargo.toml`에서 확인하세요. 기존 루트 EXE를 수정했다고 가정하지 마세요.
+소스 빌드 결과는 **`target/release/silhouette-tetris.exe`** (`crates/app/Cargo.toml`의 `[[bin]]` 설정)입니다. 저장소 루트에 이미 포함된 `SilhouetteTetris.exe`와는 **다른 파일**이므로, 새 코드를 실행할 때는 빌드 결과를 직접 실행하거나 루트 EXE를 별도로 교체해야 합니다.
 
 Cold Clear 2 엔진은 `engines/cold-clear-2.exe`에 포함되며 소스는 `third_party/cold-clear-2/`에 보관됩니다. 엔진을 다시 빌드하려면 `./scripts/build-engine.ps1`을 사용합니다.
 
