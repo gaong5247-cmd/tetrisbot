@@ -270,6 +270,50 @@ impl Snapshot {
         }
     }
 }
+/// A constrained planning snapshot intentionally never uses HOLD when the UI
+/// cannot confirm HOLD and at least three NEXT pieces. The engine receives a
+/// *synthetic duplicate reserve* of the current piece and a queue containing
+/// only actually observed pieces. The synthetic reserve is a search trick, NOT
+/// a claim about the contents of the real game's HOLD box.
+/// Strict mode is unchanged for well-observed Local Lab gameplay.
+#[derive(Debug, Clone)]
+pub struct PlanningSnapshot {
+    pub snapshot: Snapshot,
+    pub restricted_no_hold: bool,
+}
+
+impl PlanningSnapshot {
+    pub fn from_observation(o: &Observation, baseline: bool) -> Result<Self> {
+        Self::with_mode(o, baseline, false)
+    }
+    /// Preserve restricted mode across recaptures within one planned turn.
+    pub fn with_mode(o: &Observation, baseline: bool, force_restricted: bool) -> Result<Self> {
+        if !force_restricted {
+            if let Ok(snapshot) = Snapshot::from_observation(o, baseline) {
+                return Ok(Self { snapshot, restricted_no_hold: false });
+            }
+        }
+        if o.confidence < 0.9 {
+            bail!("vision confidence below threshold; cannot enter restricted mode")
+        }
+        let active = o.active.ok_or_else(|| anyhow::anyhow!("active piece unknown"))?;
+        let board = Board::from_visible(&o.cells, baseline)?;
+        // The true HOLD is unknown or the known queue is too short for
+        // high-information planning. Restrict actions to the active piece.
+        Ok(Self {
+            snapshot: Snapshot {
+                board,
+                active,
+                hold: Some(active.piece),
+                next: o.next.clone(),
+                combo: 0,
+                back_to_back: false,
+            },
+            restricted_no_hold: true,
+        })
+    }
+}
+
 /// Match exact four-cell silhouettes, returning every coordinate interpretation.
 pub fn match_shape(cells: &[(i8, i8)]) -> Vec<Location> {
     if cells.len() != 4 {

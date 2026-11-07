@@ -47,6 +47,11 @@ impl Grid {
 pub struct DetectionConfig {
     pub stable_frames: u32,
     pub lock_score: f32,
+    /// Lower score sufficient to retain a previously verified board.
+    pub retain_score: f32,
+    /// Consecutive bad frames tolerated before confirmed tracking loss.
+    /// Input is suspended from the very first uncertain frame.
+    pub loss_grace_frames: u32,
     pub min_cell: u32,
     pub max_cell: u32,
     pub edge_threshold: u8,
@@ -57,6 +62,8 @@ impl Default for DetectionConfig {
         Self {
             stable_frames: 5,
             lock_score: 0.72,
+            retain_score: 0.55,
+            loss_grace_frames: 12,
             min_cell: 6,
             max_cell: 100,
             edge_threshold: 8,
@@ -364,6 +371,14 @@ impl Tracker {
         self.missed = 0;
         self.generation += 1;
     }
+    /// Ignore stale global search candidates while already tracking a board.
+    /// The up-to-date ROI frame is authoritative; accepting a fresh full-screen
+    /// candidate during an animation could silently jump to another rectangle.
+    pub fn apply_scan(&mut self, candidates: &[Grid]) {
+        if self.state != State::Locked {
+            self.update(candidates);
+        }
+    }
     /// Revalidate the existing grid using the same temporal rules as acquisition.
     /// A piece touching the stack no longer has an isolated four-cell component;
     /// this must not discard an otherwise stable, strongly observed grid.
@@ -381,9 +396,10 @@ impl Tracker {
         let best = candidates
             .iter()
             .find(|g| {
-                g.score >= self.cfg.lock_score
-                    && (g.shape_evidence
-                        || (self.state == State::Locked && self.grid.is_some_and(|p| p.near(**g))))
+                let retained = self.state == State::Locked
+                    && self.grid.is_some_and(|p| p.near(**g));
+                (retained && g.score >= self.cfg.retain_score)
+                    || (g.score >= self.cfg.lock_score && g.shape_evidence)
             })
             .copied();
         match best {
@@ -409,7 +425,10 @@ impl Tracker {
                 // A one- or two-frame shape/edge dropout near the stack must not
                 // invalidate the fresh-game baseline. Input is suspended during
                 // the grace period and resumes only after a confirmed frame.
-                if self.state == State::Locked && self.grid.is_some() && self.missed < 2 {
+                if self.state == State::Locked
+                    && self.grid.is_some()
+                    && self.missed < self.cfg.loss_grace_frames
+                {
                     self.missed += 1;
                     return;
                 }

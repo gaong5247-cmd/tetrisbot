@@ -49,6 +49,8 @@ impl Config {
         c.controls.validate()?;
         if c.detection.stable_frames < 2
             || !(0.65..=1.).contains(&c.detection.lock_score)
+            || !(0.3..=c.detection.lock_score).contains(&c.detection.retain_score)
+            || c.detection.loss_grace_frames > 90
             || c.engine_timeout_ms > 10000
             || c.engine_timeout_ms == 0
             || c.verification_timeout_ms > 10000
@@ -285,24 +287,25 @@ impl Debugger {
         if self.empty_hold && o.hold == Known::Unknown {
             o.hold = Known::Value(None);
         }
-        let Ok(observed_snapshot) = Snapshot::from_observation(&o, self.baseline) else {
+        let Ok(observed_snapshot) = PlanningSnapshot::from_observation(&o, self.baseline) else {
             return;
         };
         if let Some((expected, since)) = &self.recovery {
             if since.elapsed() < Duration::from_millis(120) {
                 return;
             }
-            if !runtime::same_reversible_state(expected, &observed_snapshot) {
+            if !runtime::same_reversible_state(expected, &observed_snapshot.snapshot) {
                 self.error = "Board, NEXT or HOLD changed during an unfinished path".into();
                 self.stop("Unsafe to auto-resume: game state diverged");
                 return;
             }
         }
         let key = format!(
-            "{:?}/{:?}/{:?}",
+            "{:?}/{:?}/{:?}/{:?}",
             Board::from_visible(&o.cells, true).ok(),
             o.active.map(|a| a.piece),
-            o.next
+            o.next,
+            o.hold
         );
         if key == self.last_key {
             return;
@@ -680,7 +683,7 @@ impl eframe::App for Debugger {
         });
         egui::SidePanel::right("stats").min_width(245.).show(ctx,|ui|{
    ui.heading("State & Diagnostics");ui.colored_label(if self.armed {Color32::LIGHT_GREEN}else{Color32::GRAY},if self.armed{"AI ARMED"}else{"INPUT DISABLED"});
-   if let Some(v)=&self.view {let o=&v.observation;ui.label(format!("Current: {:?}",o.active));ui.label(format!("HOLD: {:?}",o.hold));ui.label(format!("NEXT: {:?}",o.next));ui.label(format!("Cell confidence: {:.1}%",o.confidence*100.));for reason in &o.reasons{ui.colored_label(Color32::YELLOW,reason);} }
+   if let Some(v)=&self.view {let o=&v.observation;ui.label(format!("Current: {:?}",o.active));ui.label(format!("HOLD: {:?}",o.hold));ui.label(format!("NEXT: {:?}",o.next));ui.label(format!("Cell confidence: {:.1}%",o.confidence*100.));if o.active.is_some() && (o.next.len()<3 || o.hold==Known::Unknown) {ui.colored_label(Color32::LIGHT_BLUE,"Limited CC2 mode: current piece only / HOLD disabled");}for reason in &o.reasons{ui.colored_label(Color32::YELLOW,reason);} }
    ui.separator();ui.label(format!("Suggested: {:?}",self.moves.first()));ui.label(format!("Last verified move: {}",self.completed));
    for (name,t) in [("Capture",&self.capture),("Vision",&self.vision),("Search",&self.search),("Input",&self.input),("Verify",&self.verify)] {let r=t.report();ui.label(format!("{name}: {:.2} ms / p95 {:.2}",r.mean_ms,r.p95_ms));}
    ui.separator();ui.label(&self.status);if !self.error.is_empty(){ui.colored_label(Color32::LIGHT_RED,format!("Last verification error: {}",self.error));}
@@ -813,7 +816,7 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
         if !allow_input || busy || !failures.is_empty() || v.state != State::Locked {
             continue;
         }
-        let Ok(observed) = Snapshot::from_observation(&v.observation, fresh) else {
+        let Ok(observed) = PlanningSnapshot::from_observation(&v.observation, fresh) else {
             continue;
         };
         if let Some((expected, since)) = &recovery_guard {
@@ -824,7 +827,7 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
             if since.elapsed() < Duration::from_millis(120) {
                 continue;
             }
-            if !runtime::same_reversible_state(expected, &observed) {
+            if !runtime::same_reversible_state(expected, &observed.snapshot) {
                 failures.push("headless board/queue/HOLD diverged before retry".into());
                 break;
             }

@@ -283,11 +283,11 @@ impl Vision {
             o.confidence = o.confidence.min(0.4);
         }
         if o.next.len() < 3 {
-            o.reasons.push("NEXT sequence not yet confirmed".into());
+            o.reasons.push("NEXT preview limited: using current-piece-only search if state is otherwise verified".into());
         }
         if o.hold == Known::Unknown {
             o.reasons
-                .push("HOLD unknown (absence is not proof of empty HOLD)".into());
+                .push("HOLD not observed: current-piece-only mode disables HOLD input".into());
         }
         self.previous_raw = Some(raw);
         self.previous = Some(o.clone());
