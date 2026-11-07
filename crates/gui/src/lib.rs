@@ -90,6 +90,7 @@ pub struct Debugger {
     always_on_top: bool,
     /// Expected unchanged stack/queue after a reversible, unfinished move.
     recovery: Option<(Snapshot, Instant)>,
+    recovery_attempts: u8,
     mode: Mode,
     moves: Vec<Placement>,
     last_key: String,
@@ -121,6 +122,7 @@ impl Debugger {
             debug: true,
             always_on_top: true,
             recovery: None,
+            recovery_attempts: 0,
             mode: Mode::Original,
             moves: vec![],
             last_key: String::new(),
@@ -201,8 +203,17 @@ impl Debugger {
                     self.busy = false;
                     self.last_key.clear();
                     if self.armed {
-                        self.recovery = Some((snapshot, Instant::now()));
-                        self.status = format!("Rechecking board before automatic retry: {reason}");
+                        self.recovery_attempts = self.recovery_attempts.saturating_add(1);
+                        if self.recovery_attempts > 3 {
+                            self.error = format!("Reversible path failed repeatedly: {reason}");
+                            self.stop("Automatic retries exhausted; confirm the board before Start AI");
+                        } else {
+                            self.recovery = Some((snapshot, Instant::now()));
+                            self.status = format!(
+                                "Rechecking board before safe retry ({}/3): {reason}",
+                                self.recovery_attempts
+                            );
+                        }
                     }
                 }
                 Event::Completed {
@@ -211,6 +222,7 @@ impl Debugger {
                     verify_ms,
                 } => {
                     self.completed += 1;
+                    self.recovery_attempts = 0;
                     self.input.record(input_ms);
                     self.verify.record(verify_ms);
                     self.busy = false;
@@ -507,6 +519,7 @@ impl eframe::App for Debugger {
                 {
                     self.runtime.cancel.reset();
                     self.recovery = None;
+                    self.recovery_attempts = 0;
                     self.armed = true;
                     self.preview = true;
                     self.last_key.clear();
