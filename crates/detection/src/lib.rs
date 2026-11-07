@@ -341,6 +341,8 @@ pub struct Tracker {
     pub state: State,
     pub grid: Option<Grid>,
     pub stable: u32,
+    /// Consecutive unconfirmed frames; do not revoke a board on one visual glitch.
+    pub missed: u32,
     pub generation: u64,
     cfg: DetectionConfig,
 }
@@ -350,6 +352,7 @@ impl Tracker {
             state: State::Searching,
             grid: None,
             stable: 0,
+            missed: 0,
             generation: 0,
             cfg,
         }
@@ -358,6 +361,7 @@ impl Tracker {
         self.state = State::Searching;
         self.grid = None;
         self.stable = 0;
+        self.missed = 0;
         self.generation += 1;
     }
     /// Revalidate the existing grid using the same temporal rules as acquisition.
@@ -367,10 +371,11 @@ impl Tracker {
         let Some(grid) = self.grid else { return false };
         let checked = score(frame, grid, &self.cfg);
         self.update(&[checked]);
-        matches!(
-            self.state,
-            State::Candidate | State::Validating | State::Locked
-        )
+        self.missed == 0
+            && matches!(
+                self.state,
+                State::Candidate | State::Validating | State::Locked
+            )
     }
     pub fn update(&mut self, candidates: &[Grid]) {
         let best = candidates
@@ -383,6 +388,7 @@ impl Tracker {
             .copied();
         match best {
             Some(g) => {
+                self.missed = 0;
                 let same = self.grid.is_some_and(|p| p.near(g));
                 if same {
                     self.stable += 1;
@@ -400,6 +406,14 @@ impl Tracker {
                 };
             }
             None => {
+                // A one- or two-frame shape/edge dropout near the stack must not
+                // invalidate the fresh-game baseline. Input is suspended during
+                // the grace period and resumes only after a confirmed frame.
+                if self.state == State::Locked && self.grid.is_some() && self.missed < 2 {
+                    self.missed += 1;
+                    return;
+                }
+                self.missed = 0;
                 self.stable = 0;
                 self.state = match self.state {
                     State::Locked => {
@@ -414,6 +428,6 @@ impl Tracker {
         }
     }
     pub fn may_input(&self) -> bool {
-        self.state == State::Locked
+        self.state == State::Locked && self.missed == 0
     }
 }
