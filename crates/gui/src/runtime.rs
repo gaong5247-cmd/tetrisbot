@@ -36,6 +36,7 @@ pub enum Event {
         observation: Observation,
         input_ms: f64,
         verify_ms: f64,
+        garbage_lines: u8,
     },
     Failed(String),
 }
@@ -62,6 +63,33 @@ pub fn same_reversible_state(before: &Snapshot, after: &Snapshot) -> bool {
         && before.queue() == after.queue()
         && before.hold == after.hold
 }
+/// Recognize a standard bottom-injected garbage attack without inventing
+/// empty cells. All the old occupied rows must have shifted upward by the
+/// SAME number of rows, and the new bottom rows must be nearly full, each
+/// with a visible hole. No clipped blocks may disappear into hidden rows.
+pub fn garbage_rise_lines(before: &Board, after: &Board) -> Option<u8> {
+    if before.rows[20..].iter().any(|&r|r!=0) || after.rows[20..].iter().any(|&r|r!=0) {
+        return None
+    }
+    for count in 1..=12usize {
+        if before.rows[(20-count)..20].iter().any(|&r|r!=0) {continue}
+        let top_matches=(0..(20-count)).all(|y|after.rows[y+count]==before.rows[y]);
+        let injected=(0..count).all(|y| {
+            let filled=after.rows[y].count_ones();
+            (8..=9).contains(&filled) // at least one actual visible hole
+        });
+        if top_matches && injected {return Some(count as u8)}
+    }
+    None
+}
+pub fn compatible_multiplayer_recovery(
+    before:&Snapshot, after:&Snapshot, allow_garbage:bool
+) -> bool {
+    before.active.piece==after.active.piece
+        && (same_reversible_state(before,after)
+            || (allow_garbage && garbage_rise_lines(&before.board,&after.board).is_some()))
+}
+
 /// Accept any foreground Tetris game when the external-games option is enabled.
 /// Keep the debugger itself excluded so a board screenshot in the GUI can never
 /// receive input by mistake. All other vision, focus, and path checks still apply.
@@ -376,9 +404,10 @@ impl Runtime {
     // longer reversible and must never be automatically retried.
     let mut hard_drop_sent=false;
     let mut lock_diagnostics = LockDiagnostics::default();
+    let mut garbage_lines = 0u8;
     let outcome=(||->Result<()> {
      let initial=PlanningSnapshot::from_observation(&observation,baseline)?;
-     let snapshot=initial.snapshot;
+     let mut snapshot=initial.snapshot;
      // CC2 always receives only the current piece; the simulated reserve is
      // never a real HOLD action. No future-piece HUD data is observed.
      let _=etx.send(Event::Status("Cold Clear 2 (current piece only; no NEXT/HOLD scan)".into()));
@@ -387,7 +416,7 @@ impl Runtime {
      phase="engine suggestion";
      recovery_snapshot=Some(snapshot.clone());
      let start=Instant::now();
-     let (moves, restarted)=suggest_current_with_restart(
+     let (mut moves, restarted)=suggest_current_with_restart(
          &mut client, &cfg.engine_path,
          Duration::from_millis(cfg.engine_timeout_ms), &snapshot)?;
      let elapsed=start.elapsed().as_secs_f64()*1000.;
@@ -410,11 +439,30 @@ impl Runtime {
      // No NEXT/HOLD: capture only the 10x20 board, not the entire 22x22 ROI.
      let board_capture_rect=grid.rect();
      let fresh=Arc::new(capture::capture(board_capture_rect,frame.sequence+1)?);
-     let current=vision.observe(&fresh,grid);
-     let current_snapshot=PlanningSnapshot::from_observation(&current,baseline)?.snapshot;
+     let mut current=vision.observe(&fresh,grid);
+     let mut current_snapshot=PlanningSnapshot::from_observation(&current,baseline)?.snapshot;
+     // A multiplayer garbage packet can land while the solver is working.
+     // Re-solve from the new observed stack ONLY for an exact, non-clipping
+     // bottom rise with visible holes. This is before any key is sent.
+     if cfg.multiplayer_attack_mode
+         && current_snapshot.active.piece==snapshot.active.piece
+         && let Some(lines)=garbage_rise_lines(&snapshot.board,&current_snapshot.board)
+     {
+      let _=etx.send(Event::Status(format!(
+          "{lines} incoming garbage lines detected during search; recalculating")));
+      phase="garbage replan";
+      snapshot=current_snapshot.clone();
+      recovery_snapshot=Some(snapshot.clone());
+      let (new_moves,_)=suggest_current_with_restart(
+          &mut client,&cfg.engine_path,Duration::from_millis(cfg.engine_timeout_ms),&snapshot)?;
+      moves=new_moves;
+      let refreshed=capture::capture(board_capture_rect,frame.sequence+4)?;
+      current=vision.observe(&refreshed,grid);
+      current_snapshot=PlanningSnapshot::from_observation(&current,baseline)?.snapshot;
+     }
      if current_snapshot.board!=snapshot.board
          || current_snapshot.active.piece!=snapshot.active.piece
-     {bail!("state changed during engine search")}
+     {bail!("state changed during engine search (possible unverified garbage attack)")}
      // Ignore every suggestion for any piece other than the observed active.
      let chosen=moves.iter()
         .filter(|m| m.location.piece == current_snapshot.active.piece)
@@ -460,9 +508,16 @@ impl Runtime {
         keyboard.check()?;
         let step_frame=capture::capture(board_capture_rect,frame.sequence+2)?;
         let step_observation=vision.observe(&step_frame,grid);
+        let frame_board=Board::from_visible(&step_observation.cells,baseline).ok();
+        if cfg.multiplayer_attack_mode
+            && frame_board.as_ref().is_some_and(|b|
+                garbage_rise_lines(&snapshot.board,b).is_some())
+        {
+            bail!("incoming multiplayer garbage rose during movement; safe replan requested")
+        }
         let verified=step_observation.confidence>=0.9
             && step_observation.active.is_some()
-            && Board::from_visible(&step_observation.cells,baseline).is_ok_and(|b| b==snapshot.board);
+            && frame_board.is_some_and(|b| b==snapshot.board);
         // For horizontal moves the active piece's x must actually change.
         // Merely seeing an active tetromino again does NOT prove that the game
         // accepted SendInput; otherwise bot keeps moving on a stale model.
@@ -499,6 +554,8 @@ impl Runtime {
      let mut verifier=vision::Vision::default();
      verifier.seed(&trusted); // keep pre-drop history through spawn/line-clear animation
      let mut verified=None;
+     let mut last_garbage_board=None;
+     let mut garbage_matches=0;
      while verify_start.elapsed()<Duration::from_millis(cfg.verification_timeout_ms) {
       keyboard.check()?;
       let f=capture::capture(board_capture_rect,frame.sequence+3)?;
@@ -507,12 +564,31 @@ impl Runtime {
        verified=Some(o);
        break;
       }
-      // A transient animation is not the next verified piece. Preserve the
-      // pre-drop reference so the next actual spawn can be distinguished from
-      // the four cells that just locked.
+      // A precisely shifted board can be the expected placement plus
+      // bottom-injected garbage. Accept only after two stable observations.
+      if cfg.multiplayer_attack_mode
+          && o.confidence>=0.9 && o.active.is_some()
+          && let Ok(actual)=Board::from_visible(&o.cells,baseline)
+          && let Some(lines)=garbage_rise_lines(&chosen.expected,&actual)
+      {
+       if last_garbage_board==Some(actual) {
+        garbage_matches+=1;
+       } else {
+        garbage_matches=1;
+        last_garbage_board=Some(actual);
+       }
+       if garbage_matches>=2 {
+        garbage_lines=lines;
+        verified=Some(o);
+        break;
+       }
+      } else {
+       garbage_matches=0;
+       last_garbage_board=None;
+      }
+      // Transient effects are not an accepted next piece; keep pre-drop
+      // history so the actual next spawn can be distinguished.
       verifier.seed(&trusted);
-      // Capturing the board already takes measurable time; a shorter poll
-      // avoids idling for another full 60fps frame on every verified lock.
       std::thread::sleep(Duration::from_millis(8));
      }
      let observation=verified.with_context(||format!(
@@ -523,7 +599,11 @@ impl Runtime {
      ))?;
      // The real game state is reconstructed from the next captured piece.
      client.as_mut().context("engine disappeared before stop")?.stop()?;
-     let _=etx.send(Event::Completed {observation,input_ms,verify_ms:verify_start.elapsed().as_secs_f64()*1000.});Ok(())
+     let _=etx.send(Event::Completed {
+         observation,input_ms,
+         verify_ms:verify_start.elapsed().as_secs_f64()*1000.,
+         garbage_lines,
+     });Ok(())
     })();
     if let Err(e)=outcome {
      let error=format!("{e:#}");
@@ -553,6 +633,8 @@ impl Runtime {
         "placement":placement,"planned_actions":actions,
         "completed_actions":completed_actions,"last_action":last_action,
         "post_lock":lock_diagnostics.report(),
+        "multiplayer_attack_mode":cfg.multiplayer_attack_mode,
+        "recognized_garbage_lines":garbage_lines,
         "configured_controls": {
             "input_method":cfg.controls.input_method,
             "left":cfg.controls.left,

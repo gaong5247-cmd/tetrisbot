@@ -4,6 +4,9 @@ engine_path = "engines/cold-clear-2.exe"
 engine_timeout_ms = 4500
 verification_timeout_ms = 3500
 allow_external = true
+# Enable only in agreed multiplayer matches: permit verified bottom-injected
+# garbage rises and replan around actual open holes.
+multiplayer_attack_mode = false
 # External games are allowed only after Start AI; target window must be foreground.
 
 # Edit these to match your game's Settings -> Controls.

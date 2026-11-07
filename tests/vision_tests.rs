@@ -272,3 +272,117 @@ fn board_only_cropped_frame_preserves_current_piece_and_stack() {
     assert_eq!(rect.width, 240);
     assert_eq!(rect.height, 480);
 }
+
+
+/// Recreates a translucent solid-purple ghost like the reported game:
+/// active T RGB(175,41,138), ghost RGB(87,20,69), cyan locked floor.
+/// The two T silhouettes touch and look like one eight-cell binary blob.
+#[test]
+fn touching_dim_translucent_ghost_is_not_treated_as_locked_or_active() {
+    use capture::{Frame,Rect};
+    use detection::Grid;
+    let grid=Grid {x:80.,y:40.,cw:24.,ch:24.,score:1.,shape_evidence:true};
+    let mut frame=Frame::new(Rect{x:0,y:0,width:400,height:570},[0,0,0,255]);
+    let mut paint=|x:i8,y:i8,color:[u8;4]| {
+        frame.fill(Rect{
+            x:grid.x as i32+x as i32*24,
+            y:grid.y as i32+(19-y as i32)*24,
+            width:24,height:24
+        },color);
+    };
+    let bright=Location {piece:Piece::T,rotation:Rotation::North,x:1,y:2};
+    let ghost=Location {y:0,..bright};
+    for (x,y) in bright.cells() {paint(x,y,[175,41,138,255]);}
+    for (x,y) in ghost.cells() {paint(x,y,[87,20,69,255]);}
+    for x in 3..7 {paint(x,0,[15,155,215,255]);}
+    let observation=vision::Vision::default().observe(&frame,grid);
+    assert_eq!(observation.active.unwrap().piece,Piece::T);
+    assert!(observation.active.unwrap().same_cells(bright));
+    let ghost_count=observation.cells.iter().flatten()
+        .filter(|c|c.kind==CellKind::Ghost).count();
+    assert_eq!(ghost_count,4,"dimmed ghost T must be kept out of locked terrain");
+    let board=Board::from_visible(&observation.cells,true).unwrap();
+    assert_eq!(board.rows[0],(3..7).fold(0,|v,x|v|(1<<x)));
+    assert!(board.rows[1..].iter().all(|&row|row==0));
+    assert!(observation.confidence>=0.9);
+}
+
+#[test]
+fn rising_multiplayer_garbage_does_not_change_playfield_background() {
+    use capture::{Frame,Rect};
+    use detection::Grid;
+    let grid=Grid {x:80.,y:40.,cw:24.,ch:24.,score:1.,shape_evidence:true};
+    let frame_rect=Rect{x:0,y:0,width:400,height:570};
+    let mut frame=Frame::new(frame_rect,[0,0,0,255]);
+    let mut stable=vision::Vision::default();
+    let _=stable.observe(&frame,grid); // acquire the empty black background
+
+    // 17 of 20 rows are filled with rising garbage, leaving an open column.
+    // The old median-of-all-200-cells selected gray garbage as the background.
+    let garbage=[115,115,115,255];
+    for y in 0..17 {
+        for x in 0..10 {
+            if x==4 {continue}
+            frame.fill(Rect{
+                x:grid.x as i32+x*24,
+                y:grid.y as i32+(19-y)*24,
+                width:24,height:24
+            },garbage);
+        }
+    }
+    let active=Location {piece:Piece::T,rotation:Rotation::North,x:4,y:18};
+    for (x,y) in active.cells() {
+        frame.fill(Rect{
+            x:grid.x as i32+x as i32*24,
+            y:grid.y as i32+(19-y as i32)*24,
+            width:24,height:24
+        },[194,55,122,255]);
+    }
+    let observation=stable.observe(&frame,grid);
+    let board=Board::from_visible(&observation.cells,true).unwrap();
+    for y in 0..17 {assert_eq!(board.rows[y],1023^(1<<4),"garbage row {y}");}
+    assert!(board.rows[17..].iter().all(|&row|row==0));
+    assert_eq!(observation.active.unwrap().piece,Piece::T);
+    assert!(observation.confidence>=0.9);
+
+    // Also handle first capture during a high-stack attack without a history.
+    let first=vision::Vision::default().observe(&frame,grid);
+    let first_board=Board::from_visible(&first.cells,true).unwrap();
+    assert_eq!(first_board,board);
+}
+
+
+#[test]
+fn almost_topped_out_19_garbage_rows_keep_real_holes_and_active_i() {
+    use capture::{Frame,Rect};
+    use detection::Grid;
+    let grid=Grid{x:70.,y:36.,cw:24.,ch:24.,score:1.,shape_evidence:true};
+    let mut frame=Frame::new(Rect{x:0,y:0,width:380,height:570},[0,0,0,255]);
+    for y in 0..19i32 {
+        for x in 0..10i32 {
+            if x==4 {continue}
+            frame.fill(Rect{
+                x:grid.x as i32+x*24,
+                y:grid.y as i32+(19-y)*24,
+                width:24,height:24
+            },[120,120,120,255]);
+        }
+    }
+    // The I block is touching the top of the 19-row garbage stack; the
+    // previous binary blob classifier merged active+garbage and lost it.
+    let active=Location{piece:Piece::I,rotation:Rotation::North,x:4,y:19};
+    for (x,y) in active.cells() {
+        frame.fill(Rect {
+            x:grid.x as i32+x as i32*24,
+            y:grid.y as i32+(19-y as i32)*24,
+            width:24,height:24
+        },[15,155,215,255]);
+    }
+    let o=vision::Vision::default().observe(&frame,grid);
+    assert_eq!(o.active.unwrap().piece,Piece::I);
+    assert!(o.active.unwrap().same_cells(active));
+    let b=Board::from_visible(&o.cells,true).unwrap();
+    assert!(b.rows[19..].iter().all(|&row|row==0));
+    for y in 0..19 {assert_eq!(b.rows[y],1023^(1<<4));}
+    assert!(o.confidence>=0.9);
+}

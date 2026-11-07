@@ -21,6 +21,9 @@ pub struct Config {
     pub engine_timeout_ms: u64,
     pub verification_timeout_ms: u64,
     pub allow_external: bool,
+    /// Only in explicitly agreed multiplayer matches: accept verified
+    /// bottom-injected garbage and recalculate the current piece's path.
+    pub multiplayer_attack_mode: bool,
     pub controls: input::KeyBindings,
     pub detection: DetectionConfig,
     pub movement: MovementProfile,
@@ -34,6 +37,7 @@ impl Default for Config {
             engine_timeout_ms: 4500,
             verification_timeout_ms: 3500,
             allow_external: true,
+            multiplayer_attack_mode: false,
             controls: input::KeyBindings::default(),
             detection: DetectionConfig::default(),
             movement: MovementProfile::default(),
@@ -245,13 +249,18 @@ impl Debugger {
                     observation: _,
                     input_ms,
                     verify_ms,
+                    garbage_lines,
                 } => {
                     self.completed += 1;
                     self.recovery_attempts = 0;
                     self.input.record(input_ms);
                     self.verify.record(verify_ms);
                     self.busy = false;
-                    self.status = format!("Verified move {}", self.completed);
+                    self.status = if garbage_lines>0 {
+                        format!("Verified move {} + {} incoming garbage lines; replanning", self.completed, garbage_lines)
+                    } else {
+                        format!("Verified move {}", self.completed)
+                    };
                     self.last_key.clear();
                 }
                 Event::Failed(e) => {
@@ -295,7 +304,9 @@ impl Debugger {
             if since.elapsed() < Duration::from_millis(120) {
                 return;
             }
-            if !runtime::same_reversible_state(expected, &observed_snapshot.snapshot) {
+            if !runtime::compatible_multiplayer_recovery(
+                expected, &observed_snapshot.snapshot, self.cfg.multiplayer_attack_mode
+            ) {
                 self.error = "Board or current piece changed during an unfinished path".into();
                 self.stop("Unsafe to auto-resume: game state diverged");
                 return;
@@ -603,6 +614,10 @@ impl eframe::App for Debugger {
             let mut apply_profile = false;
             ui.horizontal_wrapped(|ui| {
                 changed_profile |= ui.checkbox(&mut self.cfg.allow_external, "Allow external Tetris games").changed();
+                changed_profile |= ui.checkbox(
+                    &mut self.cfg.multiplayer_attack_mode,
+                    "Multiplayer Attack (bottom garbage rises)"
+                ).changed();
                 if ui.button("Apply Game Profile").clicked() {
                     apply_profile = true;
                 }
@@ -746,6 +761,7 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
     if allow_input && !fresh {
         bail!("--allow-input also requires --fresh-game")
     }
+    let multiplayer_attack_mode = cfg.multiplayer_attack_mode;
     let rt = Runtime::start(cfg);
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let mut busy = false;
@@ -845,7 +861,9 @@ pub fn headless(cfg: Config, seconds: u64, allow_input: bool, fresh: bool) -> Re
             if since.elapsed() < Duration::from_millis(120) {
                 continue;
             }
-            if !runtime::same_reversible_state(expected, &observed.snapshot) {
+            if !runtime::compatible_multiplayer_recovery(
+                expected, &observed.snapshot, multiplayer_attack_mode
+            ) {
                 failures.push("headless board/current piece diverged before retry".into());
                 break;
             }
