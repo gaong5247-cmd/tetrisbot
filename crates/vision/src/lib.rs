@@ -442,6 +442,44 @@ impl Vision {
                 }
             }
             let landing = locked.dropped(loc);
+            // Some games draw the ghost at 10-20% opacity: it is too faint
+            // for the binary occupied mask, but still causes "uncertain"
+            // cells. Promote only a consistent 4-cell, same-hue faint
+            // silhouette at the physically predicted landing location.
+            let active_cells=loc.cells();
+            let active_color: [f32;3]=std::array::from_fn(|channel|
+                active_cells.iter().map(|&(x,y)|
+                    centers[(19-y) as usize*10+x as usize][channel] as f32
+                ).sum::<f32>()/4.0
+            );
+            let mut weak_ghost=Vec::new();
+            let nonoverlap=landing.cells().into_iter()
+                .filter(|p|!active_cells.contains(p)).count();
+            for (x,y) in landing.cells() {
+                if !(0..20).contains(&y) || active_cells.contains(&(x,y)) {continue}
+                let (xi,yi)=(x as usize,(19-y) as usize);
+                if o.cells[yi][xi].kind!=CellKind::Uncertain {continue}
+                if self.previous.as_ref().is_some_and(|prev|
+                    prev.cells[yi][xi].kind==CellKind::Locked) {continue}
+                let faint=std::array::from_fn(|k| centers[yi*10+xi][k] as f32);
+                let a: [f32;3]=std::array::from_fn(|k|active_color[k]-bg[k] as f32);
+                let b: [f32;3]=std::array::from_fn(|k|faint[k]-bg[k] as f32);
+                let aa: f32=a.iter().map(|v|v*v).sum();
+                let bb: f32=b.iter().map(|v|v*v).sum();
+                let dot: f32=(0..3).map(|k|a[k]*b[k]).sum();
+                let ratio=if aa>0. { (bb/aa).sqrt() } else {0.};
+                if aa>400. && bb>80.
+                    && (0.08..0.85).contains(&ratio)
+                    && dot>0.94*(aa*bb).sqrt()
+                {
+                    weak_ghost.push((xi,yi));
+                }
+            }
+            if weak_ghost.len()>=nonoverlap.min(3).max(2) {
+                for (x,y) in weak_ghost {
+                    o.cells[y][x]=Cell {kind:CellKind::Ghost,confidence:0.94};
+                }
+            }
             for (x, y) in landing.cells() {
                 if (0..20).contains(&y)
                     && (outlines[(19 - y) as usize][x as usize]
