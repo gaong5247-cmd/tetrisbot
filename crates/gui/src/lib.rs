@@ -277,6 +277,13 @@ impl Debugger {
             || v.observation.confidence < 0.9
             || v.frame.at.elapsed() > Duration::from_millis(250)
         {
+            if self.armed {
+                self.status = format!(
+                    "AI waiting: board={} | confidence={:.2} | frame_age={}ms | active={:?}",
+                    v.state, v.observation.confidence,
+                    v.frame.at.elapsed().as_millis(), v.observation.active
+                );
+            }
             return;
         }
         let Some(g) = v.grid else { return };
@@ -306,7 +313,10 @@ impl Debugger {
             let r = g.rect();
             let target = input::window_at(r.x + r.width as i32 / 2, r.y + r.height as i32 / 2);
             if target != input::foreground() {
-                self.status = "AI armed: focus the detected game window".into();
+                self.status = format!(
+                    "AI waiting for game focus: target={:?} (hwnd={}) / foreground={:?}",
+                    input::title(target), target, input::title(input::foreground())
+                );
                 return;
             }
             if self.runtime.cancel.stopped() {
