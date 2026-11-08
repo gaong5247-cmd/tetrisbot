@@ -590,3 +590,87 @@ fn majority_cell_votes_ignore_two_highlight_pixels() {
     let o=vision::Vision::default().observe(&f,grid);
     assert_eq!(o.cells[19][4].kind,CellKind::Locked);
 }
+
+#[test]
+fn jstris_translucent_ghost_touching_similar_locked_terrain_is_not_part_of_stack() {
+    use capture::{Frame,Rect};
+    use detection::Grid;
+    let g=Grid{x:60.,y:35.,cw:24.,ch:24.,score:1.,shape_evidence:true};
+    let background=[7u8,9,13];
+    let piece=[220u8,60,148];
+    let active=Location{piece:Piece::T,rotation:Rotation::North,x:5,y:12};
+    let landing=Board::default().dropped(active);
+    for alpha in [0.30f32, 0.50, 0.72, 0.88] {
+        let mut f=Frame::new(Rect{x:0,y:0,width:360,height:550},
+            [background[0],background[1],background[2],255]);
+        let ghost: [u8;3]=std::array::from_fn(|i|
+            (background[i] as f32*(1.-alpha)+piece[i] as f32*alpha).round() as u8);
+        let mut paint=|x:i8,y:i8,color:[u8;3]| {
+            f.fill(Rect{x:60+x as i32*24+1,y:35+(19-y as i32)*24+1,
+                width:22,height:22},[color[0],color[1],color[2],255]);
+        };
+        for (x,y) in landing.cells() {paint(x,y,ghost);}
+        // Same-color real terrain next to the ghost makes a 5-cell component.
+        paint(7,0,ghost);
+        for (x,y) in active.cells() {paint(x,y,piece);}
+        let o=vision::Vision::default().observe(&f,g);
+        assert!(o.active.is_some_and(|p|p.same_cells(active)),
+            "active silhouette lost at opacity {alpha}");
+        assert_eq!(o.cells.iter().flatten()
+            .filter(|c|c.kind==CellKind::Ghost).count(),4,
+            "connected translucent ghost missed at opacity {alpha}");
+        let board=Board::from_visible(&o.cells,true).unwrap();
+        assert_eq!(board.rows[0],1<<7,"real neighbor erased at opacity {alpha}");
+        assert!(board.rows[1..].iter().all(|&r|r==0));
+    }
+}
+
+#[test]
+fn jstris_darker_previous_locked_landing_is_not_erased_as_ghost() {
+    use capture::{Frame,Rect};
+    use detection::Grid;
+    let g=Grid{x:60.,y:35.,cw:24.,ch:24.,score:1.,shape_evidence:true};
+    let mut f=Frame::new(Rect{x:0,y:0,width:360,height:550},[7,9,13,255]);
+    let active=Location{piece:Piece::T,rotation:Rotation::North,x:5,y:12};
+    let landing=Board::default().dropped(active);
+    let mut previous=Observation {
+        cells:[[Cell{kind:CellKind::Empty,confidence:0.97};10];20],
+        active:Some(active),confidence:0.97,..Default::default()
+    };
+    for (x,y) in landing.cells() {
+        let row=(19-y) as usize;
+        previous.cells[row][x as usize].kind=CellKind::Locked;
+        f.fill(Rect{x:60+x as i32*24+1,y:35+(19-y as i32)*24+1,
+            width:22,height:22},[89,28,67,255]);
+    }
+    for (x,y) in active.cells() {
+        f.fill(Rect{x:60+x as i32*24+1,y:35+(19-y as i32)*24+1,
+            width:22,height:22},[220,60,148,255]);
+    }
+    let mut vision=vision::Vision::default();
+    vision.seed(&previous);
+    let observed=vision.observe(&f,g);
+    assert_eq!(observed.cells.iter().flatten()
+        .filter(|c|c.kind==CellKind::Ghost).count(),0);
+    let board=Board::from_visible(&observed.cells,true).unwrap();
+    for (x,y) in landing.cells() {
+        assert_ne!(board.rows[y as usize] & (1<<x),0);
+    }
+}
+
+#[test]
+fn stable_board_gate_requires_same_active_position_not_just_piece_name() {
+    let mut gate=vision::StableBoardGate::default();
+    let mut o=Observation {
+        cells:[[Cell{kind:CellKind::Empty,confidence:1.};10];20],
+        active:Some(Location::spawn(Piece::T)),
+        confidence:0.99,..Default::default()
+    };
+    assert!(!gate.observe(&o,true));
+    let mut moved=o.active.unwrap();
+    moved.x+=1;
+    o.active=Some(moved);
+    assert!(!gate.observe(&o,true));
+    assert_eq!(gate.count(),1);
+    assert!(gate.observe(&o,true));
+}
