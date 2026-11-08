@@ -201,13 +201,81 @@ fn dimmed_ghost_cells(raw: &[[bool;10];20], colors:&[[u8;3]], bg:[u8;3],
     strongest.map(|(_,loc,cells)|(loc,cells))
 }
 
+/// A solid translucent landing overlay can touch a real locked block of
+/// exactly the same color. It is then no longer a four-cell connected component,
+/// so classify the landing geometry directly instead of deleting a color blob.
+/// No fixed opacity or Jstris skin is assumed.
+fn connected_landing_ghost(
+    raw: &[[bool; 10]; 20],
+    colors: &[[u8; 3]],
+    bg: [u8; 3],
+    active: Location,
+    previous: Option<&Observation>,
+) -> Option<Vec<(i8, i8)>> {
+    let active_cells = active.cells();
+    if active_cells.iter().any(|&(x,y)| !(0..10).contains(&x) || !(0..20).contains(&y)) {
+        return None;
+    }
+    let bright = mean_group_color(&active_cells, colors);
+    let mut unique: Option<Vec<(i8, i8)>> = None;
+    for landing_y in 0..=active.y {
+        let landing = Location { y: landing_y, ..active };
+        let landing_cells = landing.cells();
+        if landing_cells.iter().any(|&(x,y)| !(0..10).contains(&x) || !(0..20).contains(&y)) {
+            continue;
+        }
+        let ghost: Vec<_> = landing_cells.into_iter()
+            .filter(|cell| !active_cells.contains(cell)).collect();
+        if ghost.len() < 2 { continue; }
+        let looks_translucent = ghost.iter().all(|&(x,y)| {
+            let row = (19-y) as usize;
+            let col = x as usize;
+            if !raw[row][col] || previous.is_some_and(|p|
+                p.cells[row][col].kind == CellKind::Locked) {
+                return false;
+            }
+            let candidate: [f32; 3] = colors[row*10+col].map(|v| v as f32);
+            let from_bg: [f32; 3] = std::array::from_fn(|c| bright[c]-bg[c] as f32);
+            let to_ghost: [f32; 3] = std::array::from_fn(|c| candidate[c]-bg[c] as f32);
+            let aa: f32 = from_bg.iter().map(|v| v*v).sum();
+            let bb: f32 = to_ghost.iter().map(|v| v*v).sum();
+            let dot: f32 = (0..3).map(|c| from_bg[c]*to_ghost[c]).sum();
+            let ratio = if aa > 0. { (bb/aa).sqrt() } else { 0. };
+            let similar_hue = aa > 400. && bb > 80.
+                && (0.15..0.93).contains(&ratio)
+                && dot > 0.95*(aa*bb).sqrt();
+            similar_hue || neutral_ghost_tint(bright, candidate, bg)
+        });
+        if !looks_translucent { continue; }
+        // Verify that the candidate can ONLY be at this piece's true landing
+        // after subtracting these visible overlay cells. Unrelated stack stays.
+        let mut real_board = Board::default();
+        for y in 0..20 {
+            for x in 0..10 {
+                if !raw[y][x] { continue; }
+                let cell = (x as i8, 19-y as i8);
+                if active_cells.contains(&cell) || landing_cells.contains(&cell) {continue}
+                real_board.rows[19-y] |= 1<<x;
+            }
+        }
+        if real_board.collides(active)
+            || !real_board.dropped(active).same_cells(landing) {
+            continue;
+        }
+        // Multiple plausible landings mean we lack sufficient visual evidence.
+        if unique.is_some() {return None}
+        unique = Some(ghost);
+    }
+    unique
+}
+
 /// An independent frame-to-frame consensus gate for issuing a new turn.
 /// A single screenshot (often a line-clear flash or incoming garbage frame)
 /// is not enough to authorize input, even if one-frame confidence is high.
 /// Each call must correspond to a newly captured frame, not a GUI repaint.
 #[derive(Default)]
 pub struct StableBoardGate {
-    last: Option<(Board, Piece)>,
+    last: Option<(Board, Location)>,
     consecutive: u8,
 }
 impl StableBoardGate {
@@ -220,7 +288,7 @@ impl StableBoardGate {
             return false;
         };
         let snapshot=planning.snapshot;
-        let key=(snapshot.board,snapshot.active.piece);
+        let key=(snapshot.board,snapshot.active);
         if self.last==Some(key) {
             self.consecutive=self.consecutive.saturating_add(1);
         } else {
@@ -442,6 +510,19 @@ impl Vision {
             });
         if let Some((cells, loc)) = chosen {
             o.active = Some(loc);
+            // Jstris and custom skins may draw a solid translucent ghost next
+            // to a real stack block, producing a five-cell color component.
+            // Accept the overlay only with matching color, exact landing
+            // physics, and no previously confirmed locked cell at the landing.
+            if let Some(ghost) = connected_landing_ghost(
+                &raw, &centers, bg, loc, self.previous.as_ref()
+            ) {
+                for (x,y) in ghost {
+                    let (column,row)=(x as usize,(19-y) as usize);
+                    raw[row][column]=false;
+                    o.cells[row][column]=Cell {kind:CellKind::Ghost,confidence:0.94};
+                }
+            }
             if self
                 .previous
                 .as_ref()
